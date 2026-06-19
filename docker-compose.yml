@@ -1,0 +1,13 @@
+services:
+  orchestrator:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DEVIN_API_KEY=${DEVIN_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    volumes:
+      - ./tasks.json:/app/tasks.json
+    restart: unless-stopped
