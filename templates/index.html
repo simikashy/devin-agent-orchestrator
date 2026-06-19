@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ASOC Orchestrator Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div class="max-w-6xl mx-auto px-6 py-10">
+    <header class="flex items-center justify-between mb-8">
+      <div>
+        <h1 class="text-2xl font-semibold tracking-tight">ASOC Orchestrator Dashboard</h1>
+        <p class="text-sm text-slate-400">Autonomous Security Orchestration Console</p>
+      </div>
+      <div class="text-right text-xs text-slate-400">
+        <p>Auto-refreshing every 10s</p>
+        <p id="last-updated">Last updated: &mdash;</p>
+      </div>
+    </header>
+
+    <section id="summary" class="grid grid-cols-2 md:grid-cols-6 gap-4 mb-10"></section>
+
+    <section class="mb-10">
+      <h2 class="text-lg font-medium mb-3">Active Sessions</h2>
+      <div class="overflow-x-auto rounded-lg border border-slate-800">
+        <table class="min-w-full text-sm">
+          <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
+            <tr>
+              <th class="px-4 py-3 text-left">Task ID</th>
+              <th class="px-4 py-3 text-left">Issue</th>
+              <th class="px-4 py-3 text-left">Repository</th>
+              <th class="px-4 py-3 text-left">Status</th>
+              <th class="px-4 py-3 text-left">Session</th>
+              <th class="px-4 py-3 text-left">Started</th>
+            </tr>
+          </thead>
+          <tbody id="active-body" class="divide-y divide-slate-800"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="text-lg font-medium mb-3">Resolved Issues</h2>
+      <div class="overflow-x-auto rounded-lg border border-slate-800">
+        <table class="min-w-full text-sm">
+          <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
+            <tr>
+              <th class="px-4 py-3 text-left">Task ID</th>
+              <th class="px-4 py-3 text-left">Issue</th>
+              <th class="px-4 py-3 text-left">Repository</th>
+              <th class="px-4 py-3 text-left">Status</th>
+              <th class="px-4 py-3 text-left">Resolution Time</th>
+            </tr>
+          </thead>
+          <tbody id="resolved-body" class="divide-y divide-slate-800"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const ACTIVE_STATUSES = ["queued", "running"];
+    const RESOLVED_STATUSES = ["completed", "failed"];
+
+    const STATUS_STYLES = {
+      queued: "bg-amber-500/20 text-amber-300",
+      running: "bg-blue-500/20 text-blue-300",
+      completed: "bg-emerald-500/20 text-emerald-300",
+      failed: "bg-rose-500/20 text-rose-300",
+    };
+
+    function statusBadge(status) {
+      const cls = STATUS_STYLES[status] || "bg-slate-500/20 text-slate-300";
+      return `<span class="px-2 py-1 rounded-full text-xs font-medium ${cls}">${status}</span>`;
+    }
+
+    function formatTimestamp(seconds) {
+      if (!seconds) return "&mdash;";
+      return new Date(seconds * 1000).toLocaleString();
+    }
+
+    function formatDuration(seconds) {
+      if (seconds === null || seconds === undefined) return "&mdash;";
+      if (seconds < 60) return `${seconds.toFixed(1)}s`;
+      const minutes = Math.floor(seconds / 60);
+      const rest = Math.round(seconds % 60);
+      return `${minutes}m ${rest}s`;
+    }
+
+    function summaryCard(label, value, accent) {
+      return `
+        <div class="rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3">
+          <p class="text-xs uppercase tracking-wide text-slate-400">${label}</p>
+          <p class="text-2xl font-semibold ${accent}">${value}</p>
+        </div>`;
+    }
+
+    function renderSummary(summary) {
+      const container = document.getElementById("summary");
+      container.innerHTML = [
+        summaryCard("Total Jobs", summary.total_triggered_jobs, "text-slate-100"),
+        summaryCard("Queued", summary.queued, "text-amber-300"),
+        summaryCard("Running", summary.running, "text-blue-300"),
+        summaryCard("Completed", summary.completed, "text-emerald-300"),
+        summaryCard("Failed", summary.failed, "text-rose-300"),
+        summaryCard("MTTR", formatDuration(summary.mean_time_to_resolution_seconds), "text-indigo-300"),
+      ].join("");
+    }
+
+    function emptyRow(colspan) {
+      return `<tr><td colspan="${colspan}" class="px-4 py-6 text-center text-slate-500">No records</td></tr>`;
+    }
+
+    function renderTables(tasks) {
+      const activeBody = document.getElementById("active-body");
+      const resolvedBody = document.getElementById("resolved-body");
+
+      const entries = Object.entries(tasks);
+      const active = entries.filter(([, t]) => ACTIVE_STATUSES.includes(t.status));
+      const resolved = entries.filter(([, t]) => RESOLVED_STATUSES.includes(t.status));
+
+      activeBody.innerHTML = active.length
+        ? active.map(([id, t]) => `
+            <tr class="hover:bg-slate-900/40">
+              <td class="px-4 py-3 font-mono text-xs">${id}</td>
+              <td class="px-4 py-3">#${t.issue_id} ${t.title || ""}</td>
+              <td class="px-4 py-3 text-slate-300">${t.repository || "&mdash;"}</td>
+              <td class="px-4 py-3">${statusBadge(t.status)}</td>
+              <td class="px-4 py-3 font-mono text-xs">${t.session_id || "&mdash;"}</td>
+              <td class="px-4 py-3 text-slate-400">${formatTimestamp(t.created_at)}</td>
+            </tr>`).join("")
+        : emptyRow(6);
+
+      resolvedBody.innerHTML = resolved.length
+        ? resolved.map(([id, t]) => {
+            const duration = t.updated_at && t.created_at ? t.updated_at - t.created_at : null;
+            return `
+              <tr class="hover:bg-slate-900/40">
+                <td class="px-4 py-3 font-mono text-xs">${id}</td>
+                <td class="px-4 py-3">#${t.issue_id} ${t.title || ""}</td>
+                <td class="px-4 py-3 text-slate-300">${t.repository || "&mdash;"}</td>
+                <td class="px-4 py-3">${statusBadge(t.status)}</td>
+                <td class="px-4 py-3 text-slate-400">${formatDuration(duration)}</td>
+              </tr>`;
+          }).join("")
+        : emptyRow(5);
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/metrics");
+        if (!response.ok) return;
+        const data = await response.json();
+        renderSummary(data.summary);
+        renderTables(data.tasks);
+        document.getElementById("last-updated").textContent =
+          "Last updated: " + new Date().toLocaleTimeString();
+      } catch (error) {
+        console.error("Failed to load metrics", error);
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 10000);
+  </script>
+</body>
+</html>
