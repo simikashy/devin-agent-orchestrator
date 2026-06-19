@@ -99,6 +99,30 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 Then open http://localhost:8000 to view the dashboard.
 
+## Deployment with Docker
+
+Build and start the containerized application:
+
+```bash
+docker compose up --build
+```
+
+This builds the image from `python:3.11-slim`, installs dependencies from `requirements.txt`, and starts the orchestrator on port 8000.
+
+Environment variables are loaded from a `.env` file in the project root (see [Configure environment variables](#configure-environment-variables) above). The `tasks.json` file is mounted as a volume so task history persists across container restarts.
+
+To run in detached mode:
+
+```bash
+docker compose up --build -d
+```
+
+To stop and remove the container:
+
+```bash
+docker compose down
+```
+
 ## License
 
 Proprietary. All rights reserved.
