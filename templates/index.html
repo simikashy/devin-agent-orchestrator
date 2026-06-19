@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ASOC Orchestrator Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
   <div class="max-w-6xl mx-auto px-6 py-10">
-    <header class="flex items-center justify-between mb-8">
+    <header class="flex items-center justify-between mb-6">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">ASOC Orchestrator Dashboard</h1>
         <p class="text-sm text-slate-400">Autonomous Security Operations Center</p>
@@ -19,33 +20,65 @@
       </div>
     </header>
 
-    <section id="summary" class="grid grid-cols-2 md:grid-cols-6 gap-4 mb-10"></section>
+    <nav class="flex gap-2 mb-8 border-b border-slate-800">
+      <button id="tab-operations" data-view="operations" class="tab-button px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200">Operations</button>
+      <button id="tab-analytics" data-view="analytics" class="tab-button px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200">Analytics</button>
+    </nav>
 
-    <section class="mb-10">
-      <h2 class="text-lg font-medium mb-3">Active Sessions</h2>
-      <p class="text-xs text-slate-500 mb-2">Click a column header to sort.</p>
-      <div class="overflow-x-auto rounded-lg border border-slate-800">
-        <table class="min-w-full text-sm">
-          <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
-            <tr id="active-head"></tr>
-          </thead>
-          <tbody id="active-body" class="divide-y divide-slate-800"></tbody>
-        </table>
-      </div>
-    </section>
+    <div id="view-operations">
+      <section id="summary" class="grid grid-cols-2 md:grid-cols-6 gap-4 mb-10"></section>
 
-    <section>
-      <h2 class="text-lg font-medium mb-3">Resolved Issues</h2>
-      <p class="text-xs text-slate-500 mb-2">Click a column header to sort.</p>
-      <div class="overflow-x-auto rounded-lg border border-slate-800">
-        <table class="min-w-full text-sm">
-          <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
-            <tr id="resolved-head"></tr>
-          </thead>
-          <tbody id="resolved-body" class="divide-y divide-slate-800"></tbody>
-        </table>
+      <section class="mb-10">
+        <h2 class="text-lg font-medium mb-3">Active Sessions</h2>
+        <p class="text-xs text-slate-500 mb-2">Click a column header to sort.</p>
+        <div class="overflow-x-auto rounded-lg border border-slate-800">
+          <table class="min-w-full text-sm">
+            <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
+              <tr id="active-head"></tr>
+            </thead>
+            <tbody id="active-body" class="divide-y divide-slate-800"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="text-lg font-medium mb-3">Resolved Issues</h2>
+        <p class="text-xs text-slate-500 mb-2">Click a column header to sort.</p>
+        <div class="overflow-x-auto rounded-lg border border-slate-800">
+          <table class="min-w-full text-sm">
+            <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
+              <tr id="resolved-head"></tr>
+            </thead>
+            <tbody id="resolved-body" class="divide-y divide-slate-800"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <div id="view-analytics" class="hidden">
+      <section id="analytics-kpis" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"></section>
+
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-medium">Remediation Throughput</h2>
+        <div id="granularity-controls" class="inline-flex rounded-lg border border-slate-800 overflow-hidden text-xs"></div>
       </div>
-    </section>
+      <p class="text-xs text-slate-500 mb-3">Issues resolved and failed over time. Click a legend item to toggle a series.</p>
+      <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4 mb-10">
+        <div class="h-80">
+          <canvas id="throughput-chart"></canvas>
+        </div>
+        <p id="throughput-empty" class="hidden text-center text-sm text-slate-500 py-12">No resolved or failed issues yet.</p>
+      </div>
+
+      <h2 class="text-lg font-medium mb-3">Cumulative Issues Resolved</h2>
+      <p class="text-xs text-slate-500 mb-3">Running total of successfully remediated issues over time.</p>
+      <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+        <div class="h-80">
+          <canvas id="cumulative-chart"></canvas>
+        </div>
+        <p id="cumulative-empty" class="hidden text-center text-sm text-slate-500 py-12">No resolved issues yet.</p>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -84,9 +117,28 @@
       { key: "duration", label: "Resolution Time", type: "number" },
     ];
 
+    const GRANULARITIES = [
+      { key: "day", label: "Day" },
+      { key: "week", label: "Week" },
+      { key: "month", label: "Month" },
+      { key: "year", label: "Year" },
+    ];
+
+    const COLORS = {
+      resolved: "#34d399",
+      failed: "#fb7185",
+      cumulative: "#818cf8",
+      grid: "rgba(148, 163, 184, 0.12)",
+      text: "#94a3b8",
+    };
+
     const activeSort = { key: "created_at", dir: "desc" };
     const resolvedSort = { key: "updated_at", dir: "desc" };
     let latestTasks = {};
+    let currentView = "operations";
+    let granularity = "month";
+    let throughputChart = null;
+    let cumulativeChart = null;
 
     function escapeHtml(value) {
       if (value === null || value === undefined) return "";
@@ -224,7 +276,7 @@
       return `<tr><td colspan="${colspan}" class="px-4 py-6 text-center text-slate-500">No records</td></tr>`;
     }
 
-    function render() {
+    function renderTables() {
       const rows = Object.entries(latestTasks).map(([id, task]) => buildRow(id, task));
       const active = rows.filter((row) => ACTIVE_STATUSES.includes(row.status));
       const resolved = rows.filter((row) => RESOLVED_STATUSES.includes(row.status));
@@ -268,7 +320,7 @@
         state.key = key;
         state.dir = "asc";
       }
-      render();
+      renderTables();
     }
 
     function sortActive(key) {
@@ -277,6 +329,185 @@
 
     function sortResolved(key) {
       toggleSort(resolvedSort, key);
+    }
+
+    function pad(value) {
+      return String(value).padStart(2, "0");
+    }
+
+    function bucketKey(date, mode) {
+      const year = date.getFullYear();
+      if (mode === "year") return String(year);
+      if (mode === "month") return `${year}-${pad(date.getMonth() + 1)}`;
+      if (mode === "week") {
+        const start = new Date(date);
+        const offset = (start.getDay() + 6) % 7;
+        start.setDate(start.getDate() - offset);
+        return `Wk ${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`;
+      }
+      return `${year}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    }
+
+    function buildSeries() {
+      const resolvedTasks = Object.values(latestTasks)
+        .filter((task) => RESOLVED_STATUSES.includes(task.status) && task.updated_at)
+        .sort((a, b) => a.updated_at - b.updated_at);
+
+      const buckets = new Map();
+      resolvedTasks.forEach((task) => {
+        const key = bucketKey(new Date(task.updated_at * 1000), granularity);
+        if (!buckets.has(key)) buckets.set(key, { resolved: 0, failed: 0 });
+        const entry = buckets.get(key);
+        if (task.status === "completed") entry.resolved += 1;
+        else entry.failed += 1;
+      });
+
+      const labels = Array.from(buckets.keys());
+      const resolved = labels.map((key) => buckets.get(key).resolved);
+      const failed = labels.map((key) => buckets.get(key).failed);
+      let runningTotal = 0;
+      const cumulative = resolved.map((value) => {
+        runningTotal += value;
+        return runningTotal;
+      });
+
+      return { labels, resolved, failed, cumulative, count: resolvedTasks.length };
+    }
+
+    function renderKpis(series) {
+      const totalResolved = series.resolved.reduce((sum, value) => sum + value, 0);
+      const totalFailed = series.failed.reduce((sum, value) => sum + value, 0);
+      const handled = totalResolved + totalFailed;
+      const successRate = handled ? Math.round((totalResolved / handled) * 100) : 0;
+
+      const durations = Object.values(latestTasks)
+        .filter((task) => task.status === "completed" && task.created_at && task.updated_at)
+        .map((task) => task.updated_at - task.created_at);
+      const avg = durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : null;
+
+      const container = document.getElementById("analytics-kpis");
+      container.innerHTML = [
+        summaryCard("Issues Resolved", totalResolved, "text-emerald-300"),
+        summaryCard("Failed to Resolve", totalFailed, "text-rose-300"),
+        summaryCard("Success Rate", `${successRate}%`, "text-indigo-300"),
+        summaryCard("Avg Resolution", avg === null ? "&mdash;" : formatDuration(avg), "text-slate-100"),
+      ].join("");
+    }
+
+    function baseScales() {
+      return {
+        x: {
+          grid: { color: COLORS.grid },
+          ticks: { color: COLORS.text },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: COLORS.grid },
+          ticks: { color: COLORS.text, precision: 0 },
+        },
+      };
+    }
+
+    function renderCharts(series) {
+      const throughputCanvas = document.getElementById("throughput-chart");
+      const cumulativeCanvas = document.getElementById("cumulative-chart");
+      const throughputEmpty = document.getElementById("throughput-empty");
+      const cumulativeEmpty = document.getElementById("cumulative-empty");
+
+      const hasData = series.count > 0;
+      throughputCanvas.classList.toggle("hidden", !hasData);
+      throughputEmpty.classList.toggle("hidden", hasData);
+      cumulativeCanvas.classList.toggle("hidden", !hasData);
+      cumulativeEmpty.classList.toggle("hidden", hasData);
+
+      if (throughputChart) throughputChart.destroy();
+      if (cumulativeChart) cumulativeChart.destroy();
+      if (!hasData) return;
+
+      throughputChart = new Chart(throughputCanvas, {
+        type: "bar",
+        data: {
+          labels: series.labels,
+          datasets: [
+            { label: "Resolved", data: series.resolved, backgroundColor: COLORS.resolved, borderRadius: 4 },
+            { label: "Failed", data: series.failed, backgroundColor: COLORS.failed, borderRadius: 4 },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { labels: { color: COLORS.text } } },
+          scales: baseScales(),
+        },
+      });
+
+      cumulativeChart = new Chart(cumulativeCanvas, {
+        type: "line",
+        data: {
+          labels: series.labels,
+          datasets: [
+            {
+              label: "Cumulative Resolved",
+              data: series.cumulative,
+              borderColor: COLORS.cumulative,
+              backgroundColor: "rgba(129, 140, 248, 0.2)",
+              fill: true,
+              tension: 0.3,
+              pointRadius: 3,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { labels: { color: COLORS.text } } },
+          scales: baseScales(),
+        },
+      });
+    }
+
+    function renderAnalytics() {
+      const series = buildSeries();
+      renderKpis(series);
+      renderCharts(series);
+    }
+
+    function renderGranularityControls() {
+      const container = document.getElementById("granularity-controls");
+      container.innerHTML = GRANULARITIES.map((option) => {
+        const active = option.key === granularity
+          ? "bg-indigo-500/30 text-indigo-200"
+          : "text-slate-400 hover:text-slate-200";
+        return `<button data-granularity="${option.key}" class="px-3 py-1.5 ${active}">${option.label}</button>`;
+      }).join("");
+      container.querySelectorAll("button").forEach((button) => {
+        button.addEventListener("click", () => {
+          granularity = button.getAttribute("data-granularity");
+          renderGranularityControls();
+          renderAnalytics();
+        });
+      });
+    }
+
+    function setView(view) {
+      currentView = view;
+      document.getElementById("view-operations").classList.toggle("hidden", view !== "operations");
+      document.getElementById("view-analytics").classList.toggle("hidden", view !== "analytics");
+      document.querySelectorAll(".tab-button").forEach((button) => {
+        const isActive = button.getAttribute("data-view") === view;
+        button.classList.toggle("text-slate-100", isActive);
+        button.classList.toggle("border-indigo-400", isActive);
+        button.classList.toggle("text-slate-400", !isActive);
+        button.classList.toggle("border-transparent", !isActive);
+      });
+      if (view === "analytics") renderAnalytics();
+    }
+
+    function render() {
+      renderTables();
+      if (currentView === "analytics") renderAnalytics();
     }
 
     async function refresh() {
@@ -294,6 +525,12 @@
       }
     }
 
+    document.querySelectorAll(".tab-button").forEach((button) => {
+      button.addEventListener("click", () => setView(button.getAttribute("data-view")));
+    });
+
+    renderGranularityControls();
+    setView("operations");
     refresh();
     setInterval(refresh, 10000);
   </script>
