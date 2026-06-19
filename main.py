@@ -6,7 +6,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from fastapi import FastAPI, BackgroundTasks, Header
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -54,10 +54,6 @@ class RemediationRequest(BaseModel):
     description: str
     repository: str
     branch: str = "master"
-
-
-class BatchRemediationRequest(BaseModel):
-    requests: List[RemediationRequest]
 
 
 def post_issue_comment(repository: str, issue_id: str, body: str) -> None:
@@ -174,26 +170,6 @@ async def dashboard():
 async def trigger_remediation(payload: RemediationRequest, background_tasks: BackgroundTasks):
     task_id = enqueue_task(payload, background_tasks)
     return {"status": "accepted", "task_id": task_id}
-
-
-@app.post("/webhook/batch-remediate")
-async def batch_remediate(payload: BatchRemediationRequest, background_tasks: BackgroundTasks):
-    accepted = []
-    errors = []
-    for item in payload.requests:
-        try:
-            task_id = enqueue_task(item, background_tasks)
-            accepted.append({"issue_id": item.issue_id, "task_id": task_id})
-        except OSError as e:
-            errors.append({"issue_id": item.issue_id, "error": str(e)})
-
-    return {
-        "status": "accepted" if accepted else "failed",
-        "accepted_count": len(accepted),
-        "error_count": len(errors),
-        "tasks": accepted,
-        "errors": errors,
-    }
 
 
 @app.post("/webhooks/github")
