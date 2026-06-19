@@ -4,8 +4,9 @@ load_dotenv()
 
 import json
 import time
+import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from fastapi import FastAPI, BackgroundTasks, Header
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -23,6 +24,7 @@ TASKS_FILE = BASE_DIR / "tasks.json"
 TEMPLATES_DIR = BASE_DIR / "templates"
 
 SESSION_START_COMMENT = "Autonomous remediation initiated by ASOC pipeline."
+DEVIN_REQUEST_TIMEOUT = 30
 
 
 def load_tasks() -> Dict[str, dict]:
@@ -54,6 +56,10 @@ class RemediationRequest(BaseModel):
     branch: str = "master"
 
 
+class BatchRemediationRequest(BaseModel):
+    requests: List[RemediationRequest]
+
+
 def post_issue_comment(repository: str, issue_id: str, body: str) -> None:
     token = os.getenv("GITHUB_TOKEN", "").strip()
     if not token or not repository or not issue_id:
@@ -72,56 +78,78 @@ def post_issue_comment(repository: str, issue_id: str, body: str) -> None:
         return
 
 
-def run_devin_remediation(task_id: str, payload: RemediationRequest):
-    clean_key = os.getenv("DEVIN_API_KEY", "").strip()
-
-    headers = {
-        "Authorization": f"Bearer {clean_key}",
-        "Content-Type": "application/json",
-    }
-
-    prompt = f"""
-    You are an automated engineering agent resolving an open tracking issue.
+def build_remediation_prompt(payload: RemediationRequest) -> str:
+    return f"""
+    You are an automated engineering agent resolving an open tracking issue end to end.
 
     Repository: {payload.repository}
     Branch: {payload.branch}
     Issue Title: {payload.title}
     Issue Description: {payload.description}
 
-    Please clone the repository, check out a new branch targeting this issue, resolve the bug or vulnerability completely without introducing code comments, verify the build passes, and open a structured Pull Request back to the master branch.
+    Follow these steps precisely:
+    1. Clone the repository and create a new branch off {payload.branch} named for this issue.
+    2. Reproduce the reported bug or vulnerability before changing anything, and confirm your understanding of the root cause.
+    3. Implement a complete, minimal fix without introducing any code comments.
+    4. Run the full test suite. If tests are missing for the affected behavior, add them. Do not proceed until all tests pass locally.
+    5. Run any available linters, type checkers, and the build, and resolve every failure they surface.
+    6. Rebase onto the latest {payload.branch}. If you hit merge conflicts, resolve them carefully so existing behavior is preserved, then re-run the full test suite.
+    7. Open a structured Pull Request back to {payload.branch} summarizing the root cause, the fix, and the validation you performed.
+
+    If at any point you cannot validate the fix or the tests cannot be made to pass, stop and report the blocker instead of opening a Pull Request.
     """
 
-    body = {"prompt": prompt}
 
+def mark_task_failed(task_id: str, error: str) -> None:
+    task_store[task_id].update({
+        "status": "failed",
+        "error": error,
+        "updated_at": time.time(),
+    })
+    save_tasks(task_store)
+
+
+def create_devin_session(payload: RemediationRequest) -> requests.Response:
+    clean_key = os.getenv("DEVIN_API_KEY", "").strip()
+    headers = {
+        "Authorization": f"Bearer {clean_key}",
+        "Content-Type": "application/json",
+    }
+    body = {"prompt": build_remediation_prompt(payload)}
+    return requests.post(
+        f"{DEVIN_API_URL}/sessions",
+        json=body,
+        headers=headers,
+        timeout=DEVIN_REQUEST_TIMEOUT,
+    )
+
+
+def run_devin_remediation(task_id: str, payload: RemediationRequest):
     try:
-        response = requests.post(f"{DEVIN_API_URL}/sessions", json=body, headers=headers)
-        if response.status_code == 201:
-            data = response.json()
-            task_store[task_id].update({
-                "status": "running",
-                "session_id": data.get("session_id"),
-                "updated_at": time.time(),
-            })
-            save_tasks(task_store)
-            post_issue_comment(payload.repository, payload.issue_id, SESSION_START_COMMENT)
-        else:
-            task_store[task_id].update({
-                "status": "failed",
-                "error": f"Devin API returned status {response.status_code}",
-                "updated_at": time.time(),
-            })
-            save_tasks(task_store)
-    except Exception as e:
-        task_store[task_id].update({
-            "status": "failed",
-            "error": str(e),
-            "updated_at": time.time(),
-        })
-        save_tasks(task_store)
+        response = create_devin_session(payload)
+    except requests.Timeout:
+        mark_task_failed(task_id, "Devin API request timed out")
+        return
+    except requests.RequestException as e:
+        mark_task_failed(task_id, str(e))
+        return
+
+    if response.status_code != 201:
+        mark_task_failed(task_id, f"Devin API returned status {response.status_code}")
+        return
+
+    data = response.json()
+    task_store[task_id].update({
+        "status": "running",
+        "session_id": data.get("session_id"),
+        "updated_at": time.time(),
+    })
+    save_tasks(task_store)
+    post_issue_comment(payload.repository, payload.issue_id, SESSION_START_COMMENT)
 
 
 def enqueue_task(payload: RemediationRequest, background_tasks: BackgroundTasks) -> str:
-    task_id = f"task_{int(time.time())}"
+    task_id = f"task_{int(time.time())}_{uuid.uuid4().hex[:8]}"
     task_store[task_id] = {
         "issue_id": payload.issue_id,
         "title": payload.title,
@@ -146,6 +174,26 @@ async def dashboard():
 async def trigger_remediation(payload: RemediationRequest, background_tasks: BackgroundTasks):
     task_id = enqueue_task(payload, background_tasks)
     return {"status": "accepted", "task_id": task_id}
+
+
+@app.post("/webhook/batch-remediate")
+async def batch_remediate(payload: BatchRemediationRequest, background_tasks: BackgroundTasks):
+    accepted = []
+    errors = []
+    for item in payload.requests:
+        try:
+            task_id = enqueue_task(item, background_tasks)
+            accepted.append({"issue_id": item.issue_id, "task_id": task_id})
+        except OSError as e:
+            errors.append({"issue_id": item.issue_id, "error": str(e)})
+
+    return {
+        "status": "accepted" if accepted else "failed",
+        "accepted_count": len(accepted),
+        "error_count": len(errors),
+        "tasks": accepted,
+        "errors": errors,
+    }
 
 
 @app.post("/webhooks/github")
