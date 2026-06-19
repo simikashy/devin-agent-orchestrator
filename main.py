@@ -1,7 +1,6 @@
 import os
 from dotenv import load_dotenv
 load_dotenv()
-print(f"DEBUG: DEVIN_API_KEY found? {'Yes' if os.getenv('DEVIN_API_KEY') else 'No'}")
 
 import time
 from typing import Dict, List, Optional
