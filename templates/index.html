@@ -11,7 +11,7 @@
     <header class="flex items-center justify-between mb-8">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">ASOC Orchestrator Dashboard</h1>
-        <p class="text-sm text-slate-400">Autonomous Security Orchestration Console</p>
+        <p class="text-sm text-slate-400">Autonomous Security Operations Center</p>
       </div>
       <div class="text-right text-xs text-slate-400">
         <p>Auto-refreshing every 10s</p>
@@ -23,17 +23,11 @@
 
     <section class="mb-10">
       <h2 class="text-lg font-medium mb-3">Active Sessions</h2>
+      <p class="text-xs text-slate-500 mb-2">Click a column header to sort.</p>
       <div class="overflow-x-auto rounded-lg border border-slate-800">
         <table class="min-w-full text-sm">
           <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
-            <tr>
-              <th class="px-4 py-3 text-left">Task ID</th>
-              <th class="px-4 py-3 text-left">Issue</th>
-              <th class="px-4 py-3 text-left">Repository</th>
-              <th class="px-4 py-3 text-left">Status</th>
-              <th class="px-4 py-3 text-left">Session</th>
-              <th class="px-4 py-3 text-left">Started</th>
-            </tr>
+            <tr id="active-head"></tr>
           </thead>
           <tbody id="active-body" class="divide-y divide-slate-800"></tbody>
         </table>
@@ -42,16 +36,11 @@
 
     <section>
       <h2 class="text-lg font-medium mb-3">Resolved Issues</h2>
+      <p class="text-xs text-slate-500 mb-2">Click a column header to sort.</p>
       <div class="overflow-x-auto rounded-lg border border-slate-800">
         <table class="min-w-full text-sm">
           <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
-            <tr>
-              <th class="px-4 py-3 text-left">Task ID</th>
-              <th class="px-4 py-3 text-left">Issue</th>
-              <th class="px-4 py-3 text-left">Repository</th>
-              <th class="px-4 py-3 text-left">Status</th>
-              <th class="px-4 py-3 text-left">Resolution Time</th>
-            </tr>
+            <tr id="resolved-head"></tr>
           </thead>
           <tbody id="resolved-body" class="divide-y divide-slate-800"></tbody>
         </table>
@@ -70,14 +59,57 @@
       failed: "bg-rose-500/20 text-rose-300",
     };
 
+    const CATEGORY_LABELS = {
+      code_bug: "Code Bug",
+      test_failure: "Test Failure",
+      configuration: "Configuration",
+      session_error: "Session Error",
+    };
+
+    const ACTIVE_COLUMNS = [
+      { key: "id", label: "Task ID", type: "text" },
+      { key: "issue_id", label: "Issue", type: "number" },
+      { key: "repository", label: "Repository", type: "text" },
+      { key: "status", label: "Status", type: "text" },
+      { key: "session_id", label: "Session", type: "text" },
+      { key: "created_at", label: "Started", type: "number" },
+    ];
+
+    const RESOLVED_COLUMNS = [
+      { key: "id", label: "Task ID", type: "text" },
+      { key: "issue_id", label: "Issue", type: "number" },
+      { key: "repository", label: "Repository", type: "text" },
+      { key: "status", label: "Status", type: "text" },
+      { key: "outcome", label: "Outcome / Reason", type: "text" },
+      { key: "duration", label: "Resolution Time", type: "number" },
+    ];
+
+    const activeSort = { key: "created_at", dir: "desc" };
+    const resolvedSort = { key: "updated_at", dir: "desc" };
+    let latestTasks = {};
+
+    function escapeHtml(value) {
+      if (value === null || value === undefined) return "";
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
     function statusBadge(status) {
       const cls = STATUS_STYLES[status] || "bg-slate-500/20 text-slate-300";
-      return `<span class="px-2 py-1 rounded-full text-xs font-medium ${cls}">${status}</span>`;
+      return `<span class="px-2 py-1 rounded-full text-xs font-medium ${cls}">${escapeHtml(status)}</span>`;
+    }
+
+    function categoryBadge(category) {
+      const label = CATEGORY_LABELS[category] || category;
+      return `<span class="px-2 py-0.5 rounded-full text-xs font-medium bg-rose-500/20 text-rose-300">${escapeHtml(label)}</span>`;
     }
 
     function formatTimestamp(seconds) {
       if (!seconds) return "&mdash;";
-      return new Date(seconds * 1000).toLocaleString();
+      return escapeHtml(new Date(seconds * 1000).toLocaleString());
     }
 
     function formatDuration(seconds) {
@@ -108,43 +140,143 @@
       ].join("");
     }
 
+    function buildRow(id, task) {
+      const duration = task.updated_at && task.created_at ? task.updated_at - task.created_at : null;
+      return {
+        id,
+        issue_id: task.issue_id,
+        title: task.title || "",
+        repository: task.repository || "",
+        status: task.status,
+        session_id: task.session_id || "",
+        created_at: task.created_at || 0,
+        updated_at: task.updated_at || 0,
+        duration,
+        pr_url: task.pr_url || "",
+        failure_category: task.failure_category || "",
+        failure_reason: task.failure_reason || "",
+      };
+    }
+
+    function compareRows(a, b, column, dir) {
+      const factor = dir === "asc" ? 1 : -1;
+      let av = a[column.key];
+      let bv = b[column.key];
+      if (column.type === "number") {
+        av = av === null || av === undefined ? -Infinity : av;
+        bv = bv === null || bv === undefined ? -Infinity : bv;
+        return (av - bv) * factor;
+      }
+      return String(av).localeCompare(String(bv)) * factor;
+    }
+
+    function sortIndicator(state, key) {
+      if (state.key !== key) return "";
+      return state.dir === "asc" ? " &uarr;" : " &darr;";
+    }
+
+    function renderHead(rowId, columns, state, handler) {
+      const head = document.getElementById(rowId);
+      head.innerHTML = columns
+        .map(
+          (col) =>
+            `<th class="px-4 py-3 text-left cursor-pointer select-none hover:text-slate-200" data-key="${col.key}">${escapeHtml(col.label)}${sortIndicator(state, col.key)}</th>`
+        )
+        .join("");
+      head.querySelectorAll("th").forEach((th) => {
+        th.addEventListener("click", () => handler(th.getAttribute("data-key")));
+      });
+    }
+
+    function activeCell(row, key) {
+      if (key === "id") return `<td class="px-4 py-3 font-mono text-xs">${escapeHtml(row.id)}</td>`;
+      if (key === "issue_id") return `<td class="px-4 py-3">#${escapeHtml(row.issue_id)} ${escapeHtml(row.title)}</td>`;
+      if (key === "repository") return `<td class="px-4 py-3 text-slate-300">${row.repository ? escapeHtml(row.repository) : "&mdash;"}</td>`;
+      if (key === "status") return `<td class="px-4 py-3">${statusBadge(row.status)}</td>`;
+      if (key === "session_id") return `<td class="px-4 py-3 font-mono text-xs">${row.session_id ? escapeHtml(row.session_id) : "&mdash;"}</td>`;
+      if (key === "created_at") return `<td class="px-4 py-3 text-slate-400">${formatTimestamp(row.created_at)}</td>`;
+      return "<td class=\"px-4 py-3\"></td>";
+    }
+
+    function outcomeCell(row) {
+      if (row.status === "completed") {
+        if (row.pr_url) {
+          return `<td class="px-4 py-3"><a href="${escapeHtml(row.pr_url)}" target="_blank" rel="noopener" class="text-emerald-300 underline">View Pull Request</a></td>`;
+        }
+        return `<td class="px-4 py-3 text-slate-400">No Pull Request</td>`;
+      }
+      const reason = row.failure_reason ? escapeHtml(row.failure_reason) : "Unknown failure";
+      const badge = row.failure_category ? categoryBadge(row.failure_category) + " " : "";
+      return `<td class="px-4 py-3"><div class="flex flex-col gap-1">${badge ? `<div>${badge}</div>` : ""}<span class="text-slate-300">${reason}</span></div></td>`;
+    }
+
+    function resolvedCell(row, key) {
+      if (key === "id") return `<td class="px-4 py-3 font-mono text-xs">${escapeHtml(row.id)}</td>`;
+      if (key === "issue_id") return `<td class="px-4 py-3">#${escapeHtml(row.issue_id)} ${escapeHtml(row.title)}</td>`;
+      if (key === "repository") return `<td class="px-4 py-3 text-slate-300">${row.repository ? escapeHtml(row.repository) : "&mdash;"}</td>`;
+      if (key === "status") return `<td class="px-4 py-3">${statusBadge(row.status)}</td>`;
+      if (key === "outcome") return outcomeCell(row);
+      if (key === "duration") return `<td class="px-4 py-3 text-slate-400">${formatDuration(row.duration)}</td>`;
+      return "<td class=\"px-4 py-3\"></td>";
+    }
+
     function emptyRow(colspan) {
       return `<tr><td colspan="${colspan}" class="px-4 py-6 text-center text-slate-500">No records</td></tr>`;
     }
 
-    function renderTables(tasks) {
+    function render() {
+      const rows = Object.entries(latestTasks).map(([id, task]) => buildRow(id, task));
+      const active = rows.filter((row) => ACTIVE_STATUSES.includes(row.status));
+      const resolved = rows.filter((row) => RESOLVED_STATUSES.includes(row.status));
+
+      const activeColumn = ACTIVE_COLUMNS.find((col) => col.key === activeSort.key) || ACTIVE_COLUMNS[0];
+      const resolvedColumn =
+        RESOLVED_COLUMNS.find((col) => col.key === resolvedSort.key) || { key: resolvedSort.key, type: "number" };
+
+      active.sort((a, b) => compareRows(a, b, activeColumn, activeSort.dir));
+      resolved.sort((a, b) => compareRows(a, b, resolvedColumn, resolvedSort.dir));
+
+      renderHead("active-head", ACTIVE_COLUMNS, activeSort, sortActive);
+      renderHead("resolved-head", RESOLVED_COLUMNS, resolvedSort, sortResolved);
+
       const activeBody = document.getElementById("active-body");
       const resolvedBody = document.getElementById("resolved-body");
 
-      const entries = Object.entries(tasks);
-      const active = entries.filter(([, t]) => ACTIVE_STATUSES.includes(t.status));
-      const resolved = entries.filter(([, t]) => RESOLVED_STATUSES.includes(t.status));
-
       activeBody.innerHTML = active.length
-        ? active.map(([id, t]) => `
-            <tr class="hover:bg-slate-900/40">
-              <td class="px-4 py-3 font-mono text-xs">${id}</td>
-              <td class="px-4 py-3">#${t.issue_id} ${t.title || ""}</td>
-              <td class="px-4 py-3 text-slate-300">${t.repository || "&mdash;"}</td>
-              <td class="px-4 py-3">${statusBadge(t.status)}</td>
-              <td class="px-4 py-3 font-mono text-xs">${t.session_id || "&mdash;"}</td>
-              <td class="px-4 py-3 text-slate-400">${formatTimestamp(t.created_at)}</td>
-            </tr>`).join("")
-        : emptyRow(6);
+        ? active
+            .map(
+              (row) =>
+                `<tr class="hover:bg-slate-900/40">${ACTIVE_COLUMNS.map((col) => activeCell(row, col.key)).join("")}</tr>`
+            )
+            .join("")
+        : emptyRow(ACTIVE_COLUMNS.length);
 
       resolvedBody.innerHTML = resolved.length
-        ? resolved.map(([id, t]) => {
-            const duration = t.updated_at && t.created_at ? t.updated_at - t.created_at : null;
-            return `
-              <tr class="hover:bg-slate-900/40">
-                <td class="px-4 py-3 font-mono text-xs">${id}</td>
-                <td class="px-4 py-3">#${t.issue_id} ${t.title || ""}</td>
-                <td class="px-4 py-3 text-slate-300">${t.repository || "&mdash;"}</td>
-                <td class="px-4 py-3">${statusBadge(t.status)}</td>
-                <td class="px-4 py-3 text-slate-400">${formatDuration(duration)}</td>
-              </tr>`;
-          }).join("")
-        : emptyRow(5);
+        ? resolved
+            .map(
+              (row) =>
+                `<tr class="hover:bg-slate-900/40">${RESOLVED_COLUMNS.map((col) => resolvedCell(row, col.key)).join("")}</tr>`
+            )
+            .join("")
+        : emptyRow(RESOLVED_COLUMNS.length);
+    }
+
+    function toggleSort(state, key) {
+      if (state.key === key) {
+        state.dir = state.dir === "asc" ? "desc" : "asc";
+      } else {
+        state.key = key;
+        state.dir = "asc";
+      }
+      render();
+    }
+
+    function sortActive(key) {
+      toggleSort(activeSort, key);
+    }
+
+    function sortResolved(key) {
+      toggleSort(resolvedSort, key);
     }
 
     async function refresh() {
@@ -152,8 +284,9 @@
         const response = await fetch("/metrics");
         if (!response.ok) return;
         const data = await response.json();
+        latestTasks = data.tasks || {};
         renderSummary(data.summary);
-        renderTables(data.tasks);
+        render();
         document.getElementById("last-updated").textContent =
           "Last updated: " + new Date().toLocaleTimeString();
       } catch (error) {

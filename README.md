@@ -8,8 +8,19 @@ ASOC is a FastAPI service that sits between your GitHub repositories and the Dev
 
 - Event-driven: triggered by GitHub issue labels or direct API calls.
 - Autonomous: each job spins up a Devin session with a structured remediation prompt.
-- Observable: a built-in dashboard surfaces active sessions, resolved issues, and MTTR.
+- Closed-loop: the orchestrator tracks each session to completion, then reports the outcome back on the issue.
+- Observable: a built-in dashboard surfaces active sessions, resolved issues, MTTR, and categorized failure reasons.
 - Durable: job history is persisted to local storage and reloaded on startup.
+
+## Why ASOC
+
+Security and bug backlogs grow faster than teams can triage them, and the slow path between "issue filed" and "fix merged" is where risk accumulates. ASOC closes that gap:
+
+- Shrinks mean time to resolution by dispatching a fix the moment an issue is labeled, with no human in the critical path.
+- Keeps humans informed, not blocked: every issue receives a comment when remediation starts and a final comment with the Pull Request link or a categorized failure reason when it ends.
+- Treats every issue as an isolated, parallel-safe unit of work, so many remediations can run concurrently without interfering with one another.
+- Enforces a mandatory verification phase (tests, linters, build) before any Pull Request is opened, so autonomy does not come at the cost of reliability.
+- Surfaces actionable failure categories (code bug, test failure, configuration) so a manager can triage at a glance instead of reading raw logs.
 
 ## Architecture
 
@@ -21,8 +32,22 @@ GitHub Webhook  ->  FastAPI Orchestrator  ->  Devin API
 
 1. A GitHub issue is labeled `trigger-devin`, firing a webhook to the orchestrator.
 2. The FastAPI orchestrator validates the event, records a task, and enqueues a background job.
-3. The background job creates a Devin session with a structured prompt and updates the task status.
+3. The background job creates a Devin session with a structured prompt and updates the task status to `running`.
 4. On session start, the orchestrator comments back on the issue to confirm remediation has begun.
+5. The orchestrator polls the Devin session until it reaches a terminal state, then records the result, the Pull Request URL, and any categorized failure reason.
+6. On completion or failure, the orchestrator posts a final comment on the issue with the Pull Request link or the failure reason.
+
+### Task lifecycle
+
+Each task is persisted with `issue_id`, `status`, `session_id`, `pr_url`, `failure_category`, `failure_reason`, `created_at`, `updated_at`, and `error`. Status transitions are `queued -> running -> completed` or `queued -> running -> failed`.
+
+### Autonomous workflow contract
+
+Every Devin session is dispatched with a prompt that enforces a closed-loop pattern:
+
+- Isolation: the agent works on a dedicated branch as an independent unit, so remediations are parallel-safe.
+- Verification Phase: the agent must run the full test suite plus all linters, formatters, type checkers, and the build, and may only open a Pull Request when they pass.
+- Actionable reporting: the agent emits structured output (`result`, `failure_category`, `failure_reason`, `pull_request_url`) that the orchestrator records and renders on the dashboard.
 
 ## Endpoints
 
@@ -58,8 +83,26 @@ Consumes GitHub `issues` webhook events. When the action is `labeled` and the la
 A live dashboard is served at http://localhost:8000 and refreshes every 10 seconds. It queries the `/metrics` endpoint and renders:
 
 - Summary cards: total jobs, queued, running, completed, failed, and mean time to resolution.
-- Active Sessions: tasks that are queued or running, with their issue, repository, session id, and start time.
-- Resolved Issues: completed or failed tasks with their final status and resolution time.
+- Active Sessions: a sortable table of queued or running tasks, with their issue, repository, session id, and start time.
+- Resolved Issues: a sortable table of completed or failed tasks, showing the Pull Request link for successes and a UI-friendly failure category and reason for failures.
+
+Both tables are sortable by clicking any column header.
+
+### Failure handling
+
+When remediation does not succeed, the task is recorded with `status` `failed`, a `failure_category`, and a human-readable `failure_reason`. The orchestrator then posts a final comment on the issue in the form `Autonomous remediation failed in ASOC pipeline. Failure category: <category>. Reason: <reason>`, and the dashboard renders the category as a badge alongside the reason.
+
+Failures originate in two places:
+
+- Orchestrator-side, when the session never starts or never reaches a terminal state. These are always categorized as `configuration` (for example a timed-out request, a connection error, a non-`201` response from the Devin API, or a session that does not finish within the polling window).
+- Devin-reported, when the session runs and ends in failure. The category is taken from the session's structured output and normalized against the supported set, falling back to `session_error`.
+
+| Category | Meaning |
+| -------- | ------- |
+| `code_bug` | The agent could not produce a working fix for the issue. |
+| `test_failure` | The fix did not pass the project's test suite. |
+| `configuration` | An environment, credentials, or setup problem, including all orchestrator-side API errors. |
+| `session_error` | Fallback when a session ends in a non-success state (such as `expired` or `blocked`) without reporting a supported category. |
 
 ### Local persistence
 
@@ -98,6 +141,38 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Then open http://localhost:8000 to view the dashboard.
+
+### Simulating an issue
+
+With the server running, trigger a remediation directly through the manual endpoint:
+
+```bash
+curl -X POST http://localhost:8000/remediate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "issue_id": "101",
+    "title": "Fix SQL injection in login handler",
+    "description": "User input is concatenated directly into the query.",
+    "repository": "your-org/your-repo",
+    "branch": "main"
+  }'
+```
+
+To simulate the GitHub webhook path, send an `issues` event with the `trigger-devin` label:
+
+```bash
+curl -X POST http://localhost:8000/webhooks/github \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Event: issues" \
+  -d '{
+    "action": "labeled",
+    "label": { "name": "trigger-devin" },
+    "issue": { "number": 101, "title": "Fix SQL injection in login handler", "body": "User input is concatenated directly into the query." },
+    "repository": { "full_name": "your-org/your-repo" }
+  }'
+```
+
+Either call returns an accepted response with a `task_id`, and the new job appears on the dashboard. Without a valid `DEVIN_API_KEY`, the task is recorded and then marked `failed` with a `configuration` reason, which is the expected behavior when credentials are absent.
 
 ## Deployment with Docker
 
