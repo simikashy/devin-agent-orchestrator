@@ -88,6 +88,22 @@ A live dashboard is served at http://localhost:8000 and refreshes every 10 secon
 
 Both tables are sortable by clicking any column header.
 
+### Failure handling
+
+When remediation does not succeed, the task is recorded with `status` `failed`, a `failure_category`, and a human-readable `failure_reason`. The orchestrator then posts a final comment on the issue in the form `Autonomous remediation failed in ASOC pipeline. Failure category: <category>. Reason: <reason>`, and the dashboard renders the category as a badge alongside the reason.
+
+Failures originate in two places:
+
+- Orchestrator-side, when the session never starts or never reaches a terminal state. These are always categorized as `configuration` (for example a timed-out request, a connection error, a non-`201` response from the Devin API, or a session that does not finish within the polling window).
+- Devin-reported, when the session runs and ends in failure. The category is taken from the session's structured output and normalized against the supported set, falling back to `session_error`.
+
+| Category | Meaning |
+| -------- | ------- |
+| `code_bug` | The agent could not produce a working fix for the issue. |
+| `test_failure` | The fix did not pass the project's test suite. |
+| `configuration` | An environment, credentials, or setup problem, including all orchestrator-side API errors. |
+| `session_error` | Fallback when a session ends in a non-success state (such as `expired` or `blocked`) without reporting a supported category. |
+
 ### Local persistence
 
 The orchestrator stores its task history in a `tasks.json` file in the project root. The store is written after every state change and reloaded automatically on startup, so dashboard metrics persist across server restarts. This file is local runtime state and is excluded from version control.
