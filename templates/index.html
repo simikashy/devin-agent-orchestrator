@@ -41,7 +41,7 @@
             <option value="queued">Queued</option>
             <option value="running">Running</option>
             <option value="PR">PR</option>
-            <option value="completed">Completed</option>
+            <option value="completed">Merged</option>
             <option value="failed">Failed</option>
             <option value="cancelled">Cancelled</option>
           </select>
@@ -329,9 +329,14 @@
         .replace(/"/g, "&quot;");
     }
 
+    const STATUS_LABELS = {
+      completed: "Merged",
+    };
+
     function statusBadge(status) {
       const cls = STATUS_STYLES[status] || "bg-slate-500/20 text-slate-300";
-      return `<span class="px-2 py-1 rounded-full text-xs font-medium ${cls}">${escapeHtml(status)}</span>`;
+      const label = STATUS_LABELS[status] || status;
+      return `<span class="px-2 py-1 rounded-full text-xs font-medium ${cls}">${escapeHtml(label)}</span>`;
     }
 
     function categoryBadge(category) {
@@ -379,7 +384,7 @@
         summaryCard("Queued", summary.queued, "text-amber-300"),
         summaryCard("Running", summary.running, "text-blue-300"),
         summaryCard("PR", summary.PR, "text-indigo-300"),
-        summaryCard("Completed", summary.completed, "text-emerald-300"),
+        summaryCard("Merged", summary.completed, "text-emerald-300"),
         summaryCard("Failed", summary.failed, "text-rose-300"),
         summaryCard("Cancelled", summary.cancelled, "text-slate-300"),
         summaryCard("MTTR", formatDuration(summary.mttr), "text-indigo-300"),
