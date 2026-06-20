@@ -630,6 +630,25 @@ async def cancel_task(task_id: str, _: None = Depends(require_api_token)):
     return {"status": "cancelled", "task_id": task_id}
 
 
+@app.delete("/tasks/{task_id}")
+async def delete_task(task_id: str, _: None = Depends(require_api_token)):
+    task = require_task(task_id)
+    if task.get("status") in NON_TERMINAL_STATES:
+        request_cancel(task_id)
+    store.delete_task(task_id)
+    logger.info(
+        "task_removed",
+        extra={
+            "task_id": task_id,
+            "issue_id": task.get("issue_id"),
+            "repository": task.get("repository"),
+            "status": task.get("status"),
+            "failure_category": task.get("failure_category"),
+        },
+    )
+    return {"status": "removed", "task_id": task_id}
+
+
 @app.post("/webhooks/github")
 async def github_webhook(
     request: Request,

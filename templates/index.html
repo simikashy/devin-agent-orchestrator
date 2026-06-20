@@ -486,7 +486,7 @@
       if (row.status === "failed") {
         buttons.push(actionButton("retry", row.id, "bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30", "Retry"));
       }
-      if (!buttons.length) return `<td class="px-4 py-3 text-slate-600">&mdash;</td>`;
+      buttons.push(actionButton("remove", row.id, "bg-slate-700/40 text-slate-300 hover:bg-slate-700/70", "Remove"));
       return `<td class="px-4 py-3"><div class="flex gap-2">${buttons.join("")}</div></td>`;
     }
 
@@ -1062,16 +1062,23 @@
       return headers;
     }
 
+    const ACTION_LABELS = { retry: "Retry", cancel: "Cancel", remove: "Remove" };
+
     async function runAction(action, taskId, button) {
+      if (action === "remove" && !window.confirm(`Remove ${taskId} from the dashboard? This permanently deletes its record and excludes it from all metrics.`)) {
+        return;
+      }
+      const remove = action === "remove";
+      const url = remove ? `/tasks/${encodeURIComponent(taskId)}` : `/tasks/${encodeURIComponent(taskId)}/${action}`;
       button.disabled = true;
       try {
-        const response = await fetch(`/tasks/${encodeURIComponent(taskId)}/${action}`, {
-          method: "POST",
+        const response = await fetch(url, {
+          method: remove ? "DELETE" : "POST",
           headers: apiHeaders(),
         });
         const data = await response.json().catch(() => ({}));
         if (response.ok) {
-          showToast(`${action === "retry" ? "Retry" : "Cancel"} accepted for ${taskId}.`, true);
+          showToast(`${ACTION_LABELS[action]} accepted for ${taskId}.`, true);
           await refresh();
         } else {
           showToast(data.detail || `Failed to ${action} ${taskId} (${response.status}).`, false);
