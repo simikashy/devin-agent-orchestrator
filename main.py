@@ -6,23 +6,32 @@ import json
 import time
 import uuid
 import hmac
+import queue
 import hashlib
 import logging
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
-from fastapi import FastAPI, BackgroundTasks, Header, Request, HTTPException, Depends
+from typing import Callable, Dict, List, Optional, Tuple
+from fastapi import FastAPI, Header, Request, HTTPException, Depends, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import requests
+
+from storage import TaskStore
 
 logger = logging.getLogger("asoc")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging()
+    imported = store.migrate_legacy_tasks(TASKS_FILE)
+    if imported:
+        logger.info(f"Imported {imported} task(s) from legacy {TASKS_FILE.name}.")
     log_startup_warnings()
+    scheduler.start()
     recover_in_flight_tasks()
     yield
 
@@ -36,17 +45,36 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 BASE_DIR = Path(__file__).resolve().parent
 TASKS_FILE = BASE_DIR / "tasks.json"
+DB_FILE = BASE_DIR / "asoc.db"
 TEMPLATES_DIR = BASE_DIR / "templates"
 
 DEVIN_REQUEST_TIMEOUT = 30
 SESSION_POLL_INTERVAL_SECONDS = 15
 SESSION_POLL_MAX_ATTEMPTS = 240
 
+RETRY_MAX_ATTEMPTS = 4
+RETRY_BASE_DELAY_SECONDS = 1.0
+RETRY_MAX_DELAY_SECONDS = 30.0
+RETRYABLE_STATUS_FLOOR = 500
+
+DEFAULT_MAX_CONCURRENT_SESSIONS = 3
+METRICS_DEFAULT_PAGE_SIZE = 50
+METRICS_MAX_PAGE_SIZE = 200
+
 TRIGGER_LABEL = "trigger-devin"
 TERMINAL_SUCCESS_STATES = {"finished"}
 TERMINAL_FAILURE_STATES = {"expired", "blocked"}
 VALID_FAILURE_CATEGORIES = {"code_bug", "test_failure", "configuration"}
 NON_TERMINAL_STATES = {"queued", "running"}
+
+LOG_LEVELS = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
+TASK_LOG_FIELDS = ("task_id", "issue_id", "repository", "status", "failure_category")
 
 SESSION_START_COMMENT = "Autonomous remediation initiated by ASOC pipeline."
 DASHBOARD_TOKEN_PLACEHOLDER = "__ASOC_DASHBOARD_TOKEN__"
@@ -55,25 +83,44 @@ RESTART_RECOVERY_FAILURE_REASON = (
 )
 
 
-def load_tasks() -> Dict[str, dict]:
-    if not TASKS_FILE.exists():
-        return {}
-    try:
-        with TASKS_FILE.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        if isinstance(data, dict):
-            return data
-        return {}
-    except (json.JSONDecodeError, OSError):
-        return {}
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        for key in TASK_LOG_FIELDS:
+            if key in record.__dict__:
+                payload[key] = record.__dict__[key]
+        return json.dumps(payload, default=str)
 
 
-def save_tasks(tasks: Dict[str, dict]) -> None:
-    with TASKS_FILE.open("w", encoding="utf-8") as handle:
-        json.dump(tasks, handle, indent=2)
+def configure_logging() -> None:
+    level_name = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+    level = LOG_LEVELS.get(level_name, logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    logger.handlers = [handler]
+    logger.setLevel(level)
+    logger.propagate = False
 
 
-task_store: Dict[str, dict] = load_tasks()
+def log_task_transition(task_id: str, task: dict) -> None:
+    logger.info(
+        "task_state_transition",
+        extra={
+            "task_id": task_id,
+            "issue_id": task.get("issue_id"),
+            "repository": task.get("repository"),
+            "status": task.get("status"),
+            "failure_category": task.get("failure_category"),
+        },
+    )
+
+
+store = TaskStore(DB_FILE)
 
 
 class RemediationRequest(BaseModel):
@@ -132,6 +179,32 @@ def verify_github_signature(secret: str, body: bytes, signature_header: Optional
     return hmac.compare_digest(expected, signature_header)
 
 
+def retry_delay(attempt: int) -> float:
+    return min(RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), RETRY_MAX_DELAY_SECONDS)
+
+
+def call_with_retries(operation: Callable[[], requests.Response], context: str) -> requests.Response:
+    attempt = 1
+    while True:
+        try:
+            response = operation()
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt >= RETRY_MAX_ATTEMPTS:
+                raise
+            logger.warning(f"Transient error calling {context}; retrying (attempt {attempt}).")
+            time.sleep(retry_delay(attempt))
+            attempt += 1
+            continue
+        if response.status_code >= RETRYABLE_STATUS_FLOOR and attempt < RETRY_MAX_ATTEMPTS:
+            logger.warning(
+                f"{context} returned status {response.status_code}; retrying (attempt {attempt})."
+            )
+            time.sleep(retry_delay(attempt))
+            attempt += 1
+            continue
+        return response
+
+
 def post_issue_comment(repository: str, issue_id: str, body: str) -> None:
     token = os.getenv("GITHUB_TOKEN", "").strip()
     if not token or not repository or not issue_id:
@@ -145,7 +218,10 @@ def post_issue_comment(repository: str, issue_id: str, body: str) -> None:
     }
 
     try:
-        requests.post(url, json={"body": body}, headers=headers, timeout=DEVIN_REQUEST_TIMEOUT)
+        call_with_retries(
+            lambda: requests.post(url, json={"body": body}, headers=headers, timeout=DEVIN_REQUEST_TIMEOUT),
+            "GitHub issue comment",
+        )
     except requests.RequestException:
         return
 
@@ -186,11 +262,9 @@ def build_remediation_prompt(payload: RemediationRequest) -> str:
 
 
 def update_task(task_id: str, **fields) -> None:
-    if task_id not in task_store:
-        return
-    fields["updated_at"] = time.time()
-    task_store[task_id].update(fields)
-    save_tasks(task_store)
+    task = store.update_task(task_id, **fields)
+    if task is not None and "status" in fields:
+        log_task_transition(task_id, task)
 
 
 def normalize_failure_category(category: Optional[str]) -> str:
@@ -308,7 +382,7 @@ def poll_session(task_id: str, payload: RemediationRequest, session_id: str) -> 
 
 def run_devin_remediation(task_id: str, payload: RemediationRequest) -> None:
     try:
-        response = create_devin_session(payload)
+        response = call_with_retries(lambda: create_devin_session(payload), "Devin session creation")
     except requests.Timeout:
         finalize_failure(task_id, payload, "Devin API request timed out.", "configuration")
         return
@@ -333,6 +407,54 @@ def run_devin_remediation(task_id: str, payload: RemediationRequest) -> None:
         poll_session(task_id, payload, session_id)
 
 
+def resolve_max_concurrent_sessions() -> int:
+    raw = os.getenv("ASOC_MAX_CONCURRENT_SESSIONS", "").strip()
+    if not raw:
+        return DEFAULT_MAX_CONCURRENT_SESSIONS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_CONCURRENT_SESSIONS
+    return value if value >= 1 else DEFAULT_MAX_CONCURRENT_SESSIONS
+
+
+class SessionScheduler:
+    def __init__(self, max_concurrent: int, worker: Callable[[str, RemediationRequest], None]) -> None:
+        self._max_concurrent = max_concurrent
+        self._worker = worker
+        self._queue: "queue.Queue[Tuple[str, RemediationRequest]]" = queue.Queue()
+        self._semaphore = threading.Semaphore(max_concurrent)
+        self._started = False
+        self._start_lock = threading.Lock()
+
+    def start(self) -> None:
+        with self._start_lock:
+            if self._started:
+                return
+            self._started = True
+            threading.Thread(target=self._drain, daemon=True).start()
+
+    def submit(self, task_id: str, payload: RemediationRequest) -> None:
+        self._queue.put((task_id, payload))
+
+    def _drain(self) -> None:
+        while True:
+            task_id, payload = self._queue.get()
+            self._semaphore.acquire()
+            threading.Thread(
+                target=self._run, args=(task_id, payload), daemon=True
+            ).start()
+
+    def _run(self, task_id: str, payload: RemediationRequest) -> None:
+        try:
+            self._worker(task_id, payload)
+        finally:
+            self._semaphore.release()
+
+
+scheduler = SessionScheduler(resolve_max_concurrent_sessions(), run_devin_remediation)
+
+
 def remediation_request_from_task(task: dict) -> RemediationRequest:
     return RemediationRequest(
         issue_id=str(task.get("issue_id", "")),
@@ -344,16 +466,11 @@ def remediation_request_from_task(task: dict) -> RemediationRequest:
 
 
 def find_in_flight_task(repository: str, issue_id: str) -> Optional[str]:
-    for task_id, task in task_store.items():
-        if task.get("status") not in NON_TERMINAL_STATES:
-            continue
-        if task.get("repository") == repository and str(task.get("issue_id")) == str(issue_id):
-            return task_id
-    return None
+    return store.find_in_flight(repository, issue_id, tuple(NON_TERMINAL_STATES))
 
 
 def recover_in_flight_tasks() -> None:
-    for task_id, task in list(task_store.items()):
+    for task_id, task in store.load_tasks().items():
         if task.get("status") not in NON_TERMINAL_STATES:
             continue
         session_id = task.get("session_id")
@@ -377,16 +494,19 @@ def log_startup_warnings() -> None:
         logger.warning("GITHUB_WEBHOOK_SECRET is not set; GitHub webhook signatures are not verified.")
     if not get_dashboard_token():
         logger.warning("ASOC_DASHBOARD_TOKEN is not set; GET /metrics is unauthenticated.")
+    logger.info(
+        f"Concurrency cap set to {resolve_max_concurrent_sessions()} simultaneous Devin session(s)."
+    )
 
 
-def enqueue_task(payload: RemediationRequest, background_tasks: BackgroundTasks) -> Tuple[str, bool]:
+def enqueue_task(payload: RemediationRequest) -> Tuple[str, bool]:
     existing = find_in_flight_task(payload.repository, payload.issue_id)
     if existing:
         return existing, True
 
     task_id = f"task_{int(time.time())}_{uuid.uuid4().hex[:8]}"
     now = time.time()
-    task_store[task_id] = {
+    task = {
         "issue_id": payload.issue_id,
         "title": payload.title,
         "repository": payload.repository,
@@ -400,8 +520,9 @@ def enqueue_task(payload: RemediationRequest, background_tasks: BackgroundTasks)
         "updated_at": now,
         "error": None,
     }
-    save_tasks(task_store)
-    background_tasks.add_task(run_devin_remediation, task_id, payload)
+    store.insert_task(task_id, task)
+    log_task_transition(task_id, task)
+    scheduler.submit(task_id, payload)
     return task_id, False
 
 
@@ -415,10 +536,9 @@ async def dashboard() -> HTMLResponse:
 @app.post("/remediate")
 async def trigger_remediation(
     payload: RemediationRequest,
-    background_tasks: BackgroundTasks,
     _: None = Depends(require_api_token),
 ):
-    task_id, duplicate = enqueue_task(payload, background_tasks)
+    task_id, duplicate = enqueue_task(payload)
     if duplicate:
         return {"status": "duplicate", "task_id": task_id}
     return {"status": "accepted", "task_id": task_id}
@@ -427,7 +547,6 @@ async def trigger_remediation(
 @app.post("/webhooks/github")
 async def github_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     x_github_event: Optional[str] = Header(None),
     x_hub_signature_256: Optional[str] = Header(None),
 ):
@@ -465,35 +584,67 @@ async def github_webhook(
         description=issue.get("body", ""),
         repository=repo.get("full_name"),
     )
-    task_id, duplicate = enqueue_task(request_payload, background_tasks)
+    task_id, duplicate = enqueue_task(request_payload)
     if duplicate:
         return {"status": "duplicate", "task_id": task_id}
     return {"status": "webhook_processed", "task_id": task_id}
 
 
-@app.get("/metrics")
-async def get_metrics(_: None = Depends(require_dashboard_token)):
-    total_tasks = len(task_store)
-    completed = sum(1 for t in task_store.values() if t["status"] == "completed")
-    failed = sum(1 for t in task_store.values() if t["status"] == "failed")
-    running = sum(1 for t in task_store.values() if t["status"] == "running")
-    queued = sum(1 for t in task_store.values() if t["status"] == "queued")
-
+def mean_duration(tasks: List[Tuple[str, dict]], status: str) -> float:
     durations = [
-        t["updated_at"] - t["created_at"]
-        for t in task_store.values()
-        if t["status"] in ["completed", "failed"]
+        task["updated_at"] - task["created_at"]
+        for _, task in tasks
+        if task["status"] == status and task["created_at"] and task["updated_at"]
     ]
-    mean_time_to_resolution = sum(durations) / len(durations) if durations else 0.0
+    return round(sum(durations) / len(durations), 2) if durations else 0.0
+
+
+def build_summary(tasks: List[Tuple[str, dict]]) -> Dict[str, object]:
+    statuses = [task["status"] for _, task in tasks]
+    return {
+        "total_triggered_jobs": len(tasks),
+        "queued": statuses.count("queued"),
+        "running": statuses.count("running"),
+        "completed": statuses.count("completed"),
+        "failed": statuses.count("failed"),
+        "mean_time_to_resolution_seconds": mean_duration(tasks, "completed"),
+        "mean_time_to_failure_seconds": mean_duration(tasks, "failed"),
+    }
+
+
+@app.get("/metrics")
+async def get_metrics(
+    status: Optional[str] = None,
+    repository: Optional[str] = None,
+    from_: Optional[float] = Query(None, alias="from"),
+    to: Optional[float] = None,
+    page: int = 1,
+    page_size: int = METRICS_DEFAULT_PAGE_SIZE,
+    _: None = Depends(require_dashboard_token),
+):
+    page = max(page, 1)
+    page_size = max(1, min(page_size, METRICS_MAX_PAGE_SIZE))
+
+    tasks = store.query_tasks(
+        status=status, repository=repository, time_from=from_, time_to=to
+    )
+    summary = build_summary(tasks)
+    total = len(tasks)
+
+    start = (page - 1) * page_size
+    page_items = tasks[start : start + page_size]
 
     return {
-        "summary": {
-            "total_triggered_jobs": total_tasks,
-            "queued": queued,
-            "running": running,
-            "completed": completed,
-            "failed": failed,
-            "mean_time_to_resolution_seconds": round(mean_time_to_resolution, 2),
-        },
-        "tasks": task_store,
+        "summary": summary,
+        "tasks": {task_id: task for task_id, task in page_items},
+        "page": page,
+        "page_size": page_size,
+        "total": total,
     }
+
+
+@app.get("/healthz")
+async def healthz():
+    if store.ping():
+        return {"status": "ok"}
+    raise HTTPException(status_code=503, detail="Database connectivity check failed.")
