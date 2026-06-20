@@ -441,7 +441,7 @@ def run_devin_remediation(task_id: str, payload: RemediationRequest) -> None:
         finalize_failure(task_id, payload, f"Devin API connection error: {e}", "configuration")
         return
 
-    if response.status_code != 201:
+    if not response.ok:
         finalize_failure(
             task_id,
             payload,
