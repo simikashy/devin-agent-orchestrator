@@ -14,19 +14,68 @@
         <h1 class="text-2xl font-semibold tracking-tight">ASOC Orchestrator Dashboard</h1>
         <p class="text-sm text-slate-400">Autonomous Security Operations Center</p>
       </div>
-      <div class="text-right text-xs text-slate-400">
-        <p>Auto-refreshing every 10s</p>
-        <p id="last-updated">Last updated: &mdash;</p>
+      <div class="flex items-center gap-4">
+        <button id="open-trigger" class="rounded-md bg-indigo-500/30 px-4 py-2 text-sm font-medium text-indigo-200 hover:bg-indigo-500/40">Trigger Remediation</button>
+        <div class="text-right text-xs text-slate-400">
+          <p>Auto-refreshing every 10s</p>
+          <p id="last-updated">Last updated: &mdash;</p>
+        </div>
       </div>
     </header>
 
-    <nav class="flex gap-2 mb-8 border-b border-slate-800">
+    <nav class="flex gap-2 mb-6 border-b border-slate-800">
       <button id="tab-operations" data-view="operations" class="tab-button px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200">Operations</button>
       <button id="tab-analytics" data-view="analytics" class="tab-button px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200">Analytics</button>
     </nav>
 
+    <section class="mb-8 rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3">
+        <div>
+          <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">Repository</label>
+          <select id="filter-repository" class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"></select>
+        </div>
+        <div>
+          <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">Status</label>
+          <select id="filter-status" class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500">
+            <option value="all">All statuses</option>
+            <option value="queued">Queued</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">Failure Category</label>
+          <select id="filter-category" class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500">
+            <option value="all">All categories</option>
+            <option value="code_bug">Code Bug</option>
+            <option value="test_failure">Test Failure</option>
+            <option value="configuration">Configuration</option>
+            <option value="session_error">Session Error</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">From</label>
+          <input type="date" id="filter-from" class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+        </div>
+        <div>
+          <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">To</label>
+          <input type="date" id="filter-to" class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+        </div>
+        <div>
+          <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">Search</label>
+          <input type="text" id="filter-search" placeholder="Issue, repo, session&hellip;" class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500" />
+        </div>
+      </div>
+      <div class="flex items-center justify-between mt-3">
+        <p id="filter-summary" class="text-xs text-slate-500"></p>
+        <button id="filter-clear" class="px-3 py-1.5 rounded-md text-xs bg-slate-800 text-slate-300 hover:bg-slate-700">Clear filters</button>
+      </div>
+    </section>
+
     <div id="view-operations">
-      <section id="summary" class="grid grid-cols-2 md:grid-cols-6 gap-4 mb-10"></section>
+      <section id="summary" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-10"></section>
 
       <section class="mb-10">
         <h2 class="text-lg font-medium mb-3">Active Sessions</h2>
@@ -58,39 +107,116 @@
     <div id="view-analytics" class="hidden">
       <section id="analytics-kpis" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"></section>
 
+      <section class="mb-10">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-medium">Business Value</h2>
+          <label class="flex items-center gap-2 text-xs text-slate-400">Avg engineer-hours per fix
+            <input id="avg-hours-input" type="number" min="0" step="0.5" value="4" class="w-20 rounded-md bg-slate-950 border border-slate-800 px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+          </label>
+        </div>
+        <div id="roi-kpis" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+        <p class="text-xs text-slate-500 mt-2">Engineer-hours saved = resolved issues &times; avg hours per fix. Auto-handled rate = resolved &divide; total triggered.</p>
+      </section>
+
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-medium">Remediation Throughput</h2>
         <div id="granularity-controls" class="inline-flex rounded-lg border border-slate-800 overflow-hidden text-xs"></div>
       </div>
-      <p class="text-xs text-slate-500 mb-3">Issues resolved and failed over time. Click a legend item to toggle a series.</p>
+      <p class="text-xs text-slate-500 mb-3">Issues resolved, failed and cancelled over time. Click a legend item to toggle a series.</p>
       <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4 mb-10">
         <div class="h-80">
           <canvas id="throughput-chart"></canvas>
         </div>
-        <p id="throughput-empty" class="hidden text-center text-sm text-slate-500 py-12">No resolved or failed issues yet.</p>
+        <p id="throughput-empty" class="hidden text-center text-sm text-slate-500 py-12">No resolved, failed or cancelled issues yet.</p>
       </div>
 
       <h2 class="text-lg font-medium mb-3">Cumulative Issues Resolved</h2>
       <p class="text-xs text-slate-500 mb-3">Running total of successfully remediated issues over time.</p>
-      <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+      <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4 mb-10">
         <div class="h-80">
           <canvas id="cumulative-chart"></canvas>
         </div>
         <p id="cumulative-empty" class="hidden text-center text-sm text-slate-500 py-12">No resolved issues yet.</p>
       </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div>
+          <h2 class="text-lg font-medium mb-3">Failure Breakdown</h2>
+          <p class="text-xs text-slate-500 mb-3">Distribution of failure categories across failed remediations.</p>
+          <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+            <div class="h-72">
+              <canvas id="failure-chart"></canvas>
+            </div>
+            <p id="failure-empty" class="hidden text-center text-sm text-slate-500 py-12">No failed remediations yet.</p>
+          </div>
+        </div>
+        <div>
+          <h2 class="text-lg font-medium mb-3">Quality Trends</h2>
+          <p class="text-xs text-slate-500 mb-3">Success rate and mean time to resolution over time.</p>
+          <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+            <div class="h-72">
+              <canvas id="trend-chart"></canvas>
+            </div>
+            <p id="trend-empty" class="hidden text-center text-sm text-slate-500 py-12">No resolved issues yet.</p>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
+  <div id="trigger-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">
+    <div class="w-full max-w-lg rounded-lg border border-slate-800 bg-slate-900 p-6 shadow-xl">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-medium">Trigger Remediation</h3>
+        <button id="trigger-close" class="text-slate-400 hover:text-slate-200 text-2xl leading-none">&times;</button>
+      </div>
+      <form id="trigger-form" class="space-y-3">
+        <div>
+          <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">Repository</label>
+          <input name="repository" required placeholder="owner/repo" class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">Issue ID</label>
+            <input name="issue_id" required placeholder="101" class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+          </div>
+          <div>
+            <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">Base Branch</label>
+            <input name="branch" value="main" class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">Title</label>
+          <input name="title" required placeholder="Fix SQL injection in login handler" class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+        </div>
+        <div>
+          <label class="block text-xs uppercase tracking-wide text-slate-400 mb-1">Description</label>
+          <textarea name="description" rows="3" placeholder="User input is concatenated directly into the query." class="w-full rounded-md bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"></textarea>
+        </div>
+        <div id="trigger-feedback" class="hidden rounded-md px-3 py-2 text-sm"></div>
+        <div class="flex justify-end gap-2 pt-1">
+          <button type="button" id="trigger-cancel" class="px-3 py-2 rounded-md text-sm bg-slate-800 text-slate-300 hover:bg-slate-700">Cancel</button>
+          <button type="submit" id="trigger-submit" class="px-3 py-2 rounded-md text-sm font-medium bg-indigo-500/30 text-indigo-200 hover:bg-indigo-500/40">Trigger</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden fixed bottom-4 right-4 z-50 rounded-md px-4 py-2 text-sm shadow-lg"></div>
+
   <script>
     const DASHBOARD_TOKEN = __ASOC_DASHBOARD_TOKEN__;
+    const API_TOKEN = __ASOC_API_TOKEN__;
     const ACTIVE_STATUSES = ["queued", "running"];
-    const RESOLVED_STATUSES = ["completed", "failed"];
+    const RESOLVED_STATUSES = ["completed", "failed", "cancelled"];
+    const PAGE_SIZE = 200;
 
     const STATUS_STYLES = {
       queued: "bg-amber-500/20 text-amber-300",
       running: "bg-blue-500/20 text-blue-300",
       completed: "bg-emerald-500/20 text-emerald-300",
       failed: "bg-rose-500/20 text-rose-300",
+      cancelled: "bg-slate-600/40 text-slate-300",
     };
 
     const CATEGORY_LABELS = {
@@ -100,6 +226,13 @@
       session_error: "Session Error",
     };
 
+    const CATEGORY_COLORS = {
+      code_bug: "#f87171",
+      test_failure: "#fb923c",
+      configuration: "#facc15",
+      session_error: "#a78bfa",
+    };
+
     const ACTIVE_COLUMNS = [
       { key: "id", label: "Task ID", type: "text" },
       { key: "issue_id", label: "Issue", type: "number" },
@@ -107,6 +240,7 @@
       { key: "status", label: "Status", type: "text" },
       { key: "session_id", label: "Session", type: "text" },
       { key: "created_at", label: "Started", type: "number" },
+      { key: "actions", label: "Actions", type: "text", sortable: false },
     ];
 
     const RESOLVED_COLUMNS = [
@@ -114,8 +248,10 @@
       { key: "issue_id", label: "Issue", type: "number" },
       { key: "repository", label: "Repository", type: "text" },
       { key: "status", label: "Status", type: "text" },
-      { key: "outcome", label: "Outcome / Reason", type: "text" },
+      { key: "session_id", label: "Session", type: "text" },
+      { key: "outcome", label: "Outcome / Reason", type: "text", sortable: false },
       { key: "duration", label: "Resolution Time", type: "number" },
+      { key: "actions", label: "Actions", type: "text", sortable: false },
     ];
 
     const GRANULARITIES = [
@@ -128,18 +264,33 @@
     const COLORS = {
       resolved: "#34d399",
       failed: "#fb7185",
+      cancelled: "#94a3b8",
       cumulative: "#818cf8",
       grid: "rgba(148, 163, 184, 0.12)",
       text: "#94a3b8",
     };
 
+    const filters = {
+      repository: "all",
+      status: "all",
+      category: "all",
+      search: "",
+      fromTs: null,
+      toTs: null,
+    };
+
     const activeSort = { key: "created_at", dir: "desc" };
     const resolvedSort = { key: "updated_at", dir: "desc" };
+    const repositoryOptions = new Set();
     let latestTasks = {};
+    let filteredRows = [];
     let currentView = "operations";
     let granularity = "month";
+    let avgHoursPerFix = 4;
     let throughputChart = null;
     let cumulativeChart = null;
+    let failureChart = null;
+    let trendChart = null;
 
     function escapeHtml(value) {
       if (value === null || value === undefined) return "";
@@ -181,15 +332,28 @@
         </div>`;
     }
 
+    function computeSummary(rows) {
+      const summary = { total: rows.length, queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 };
+      rows.forEach((row) => {
+        if (summary[row.status] !== undefined) summary[row.status] += 1;
+      });
+      const durations = rows
+        .filter((row) => row.status === "completed" && row.created_at && row.updated_at)
+        .map((row) => row.updated_at - row.created_at);
+      summary.mttr = durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0;
+      return summary;
+    }
+
     function renderSummary(summary) {
       const container = document.getElementById("summary");
       container.innerHTML = [
-        summaryCard("Total Jobs", summary.total_triggered_jobs, "text-slate-100"),
+        summaryCard("Total", summary.total, "text-slate-100"),
         summaryCard("Queued", summary.queued, "text-amber-300"),
         summaryCard("Running", summary.running, "text-blue-300"),
         summaryCard("Completed", summary.completed, "text-emerald-300"),
         summaryCard("Failed", summary.failed, "text-rose-300"),
-        summaryCard("MTTR", formatDuration(summary.mean_time_to_resolution_seconds), "text-indigo-300"),
+        summaryCard("Cancelled", summary.cancelled, "text-slate-300"),
+        summaryCard("MTTR", formatDuration(summary.mttr), "text-indigo-300"),
       ].join("");
     }
 
@@ -209,6 +373,29 @@
         failure_category: task.failure_category || "",
         failure_reason: task.failure_reason || "",
       };
+    }
+
+    function passesClientFilters(row) {
+      if (filters.status !== "all" && row.status !== filters.status) return false;
+      if (filters.category !== "all") {
+        if (row.status !== "failed") return false;
+        const category = row.failure_category || "session_error";
+        if (category !== filters.category) return false;
+      }
+      if (filters.search) {
+        const needle = filters.search.toLowerCase();
+        const haystack = [row.id, row.issue_id, row.title, row.repository, row.session_id, row.failure_reason]
+          .map((value) => String(value || "").toLowerCase())
+          .join(" ");
+        if (!haystack.includes(needle)) return false;
+      }
+      return true;
+    }
+
+    function computeFilteredRows() {
+      return Object.entries(latestTasks)
+        .map(([id, task]) => buildRow(id, task))
+        .filter(passesClientFilters);
     }
 
     function compareRows(a, b, column, dir) {
@@ -231,23 +418,60 @@
     function renderHead(rowId, columns, state, handler) {
       const head = document.getElementById(rowId);
       head.innerHTML = columns
-        .map(
-          (col) =>
-            `<th class="px-4 py-3 text-left cursor-pointer select-none hover:text-slate-200" data-key="${col.key}">${escapeHtml(col.label)}${sortIndicator(state, col.key)}</th>`
-        )
+        .map((col) => {
+          const sortable = col.sortable !== false;
+          const cls = sortable ? "cursor-pointer hover:text-slate-200" : "";
+          const indicator = sortable ? sortIndicator(state, col.key) : "";
+          return `<th class="px-4 py-3 text-left select-none ${cls}" data-key="${col.key}" data-sortable="${sortable}">${escapeHtml(col.label)}${indicator}</th>`;
+        })
         .join("");
       head.querySelectorAll("th").forEach((th) => {
-        th.addEventListener("click", () => handler(th.getAttribute("data-key")));
+        if (th.getAttribute("data-sortable") === "true") {
+          th.addEventListener("click", () => handler(th.getAttribute("data-key")));
+        }
       });
+    }
+
+    function issueCell(row) {
+      const label = `#${escapeHtml(row.issue_id)}`;
+      const title = escapeHtml(row.title);
+      if (row.repository && row.issue_id) {
+        const href = `https://github.com/${encodeURI(row.repository)}/issues/${encodeURIComponent(row.issue_id)}`;
+        return `<td class="px-4 py-3"><a href="${href}" target="_blank" rel="noopener" class="text-indigo-300 hover:underline">${label}</a> ${title}</td>`;
+      }
+      return `<td class="px-4 py-3">${label} ${title}</td>`;
+    }
+
+    function sessionCell(row) {
+      if (!row.session_id) return `<td class="px-4 py-3 text-slate-500">&mdash;</td>`;
+      const href = `https://app.devin.ai/sessions/${encodeURIComponent(row.session_id)}`;
+      return `<td class="px-4 py-3"><a href="${href}" target="_blank" rel="noopener" class="font-mono text-xs text-indigo-300 hover:underline">${escapeHtml(row.session_id)}</a></td>`;
+    }
+
+    function actionButton(action, taskId, classes, label) {
+      return `<button data-action="${action}" data-task-id="${escapeHtml(taskId)}" class="px-2 py-1 rounded-md text-xs font-medium ${classes}">${label}</button>`;
+    }
+
+    function actionsCell(row) {
+      const buttons = [];
+      if (ACTIVE_STATUSES.includes(row.status)) {
+        buttons.push(actionButton("cancel", row.id, "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30", "Cancel"));
+      }
+      if (row.status === "failed") {
+        buttons.push(actionButton("retry", row.id, "bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30", "Retry"));
+      }
+      if (!buttons.length) return `<td class="px-4 py-3 text-slate-600">&mdash;</td>`;
+      return `<td class="px-4 py-3"><div class="flex gap-2">${buttons.join("")}</div></td>`;
     }
 
     function activeCell(row, key) {
       if (key === "id") return `<td class="px-4 py-3 font-mono text-xs">${escapeHtml(row.id)}</td>`;
-      if (key === "issue_id") return `<td class="px-4 py-3">#${escapeHtml(row.issue_id)} ${escapeHtml(row.title)}</td>`;
+      if (key === "issue_id") return issueCell(row);
       if (key === "repository") return `<td class="px-4 py-3 text-slate-300">${row.repository ? escapeHtml(row.repository) : "&mdash;"}</td>`;
       if (key === "status") return `<td class="px-4 py-3">${statusBadge(row.status)}</td>`;
-      if (key === "session_id") return `<td class="px-4 py-3 font-mono text-xs">${row.session_id ? escapeHtml(row.session_id) : "&mdash;"}</td>`;
+      if (key === "session_id") return sessionCell(row);
       if (key === "created_at") return `<td class="px-4 py-3 text-slate-400">${formatTimestamp(row.created_at)}</td>`;
+      if (key === "actions") return actionsCell(row);
       return "<td class=\"px-4 py-3\"></td>";
     }
 
@@ -258,18 +482,23 @@
         }
         return `<td class="px-4 py-3 text-slate-400">No Pull Request</td>`;
       }
+      if (row.status === "cancelled") {
+        return `<td class="px-4 py-3 text-slate-400">Cancelled by operator</td>`;
+      }
       const reason = row.failure_reason ? escapeHtml(row.failure_reason) : "Unknown failure";
-      const badge = row.failure_category ? categoryBadge(row.failure_category) + " " : "";
+      const badge = row.failure_category ? categoryBadge(row.failure_category) : "";
       return `<td class="px-4 py-3"><div class="flex flex-col gap-1">${badge ? `<div>${badge}</div>` : ""}<span class="text-slate-300">${reason}</span></div></td>`;
     }
 
     function resolvedCell(row, key) {
       if (key === "id") return `<td class="px-4 py-3 font-mono text-xs">${escapeHtml(row.id)}</td>`;
-      if (key === "issue_id") return `<td class="px-4 py-3">#${escapeHtml(row.issue_id)} ${escapeHtml(row.title)}</td>`;
+      if (key === "issue_id") return issueCell(row);
       if (key === "repository") return `<td class="px-4 py-3 text-slate-300">${row.repository ? escapeHtml(row.repository) : "&mdash;"}</td>`;
       if (key === "status") return `<td class="px-4 py-3">${statusBadge(row.status)}</td>`;
+      if (key === "session_id") return sessionCell(row);
       if (key === "outcome") return outcomeCell(row);
       if (key === "duration") return `<td class="px-4 py-3 text-slate-400">${formatDuration(row.duration)}</td>`;
+      if (key === "actions") return actionsCell(row);
       return "<td class=\"px-4 py-3\"></td>";
     }
 
@@ -278,9 +507,8 @@
     }
 
     function renderTables() {
-      const rows = Object.entries(latestTasks).map(([id, task]) => buildRow(id, task));
-      const active = rows.filter((row) => ACTIVE_STATUSES.includes(row.status));
-      const resolved = rows.filter((row) => RESOLVED_STATUSES.includes(row.status));
+      const active = filteredRows.filter((row) => ACTIVE_STATUSES.includes(row.status));
+      const resolved = filteredRows.filter((row) => RESOLVED_STATUSES.includes(row.status));
 
       const activeColumn = ACTIVE_COLUMNS.find((col) => col.key === activeSort.key) || ACTIVE_COLUMNS[0];
       const resolvedColumn =
@@ -349,41 +577,72 @@
       return `${year}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
     }
 
-    function buildSeries() {
-      const resolvedTasks = Object.values(latestTasks)
-        .filter((task) => RESOLVED_STATUSES.includes(task.status) && task.updated_at)
+    function buildSeries(rows) {
+      const terminal = rows
+        .filter((row) => RESOLVED_STATUSES.includes(row.status) && row.updated_at)
         .sort((a, b) => a.updated_at - b.updated_at);
 
       const buckets = new Map();
-      resolvedTasks.forEach((task) => {
-        const key = bucketKey(new Date(task.updated_at * 1000), granularity);
-        if (!buckets.has(key)) buckets.set(key, { resolved: 0, failed: 0 });
-        const entry = buckets.get(key);
-        if (task.status === "completed") entry.resolved += 1;
-        else entry.failed += 1;
+      function ensure(key) {
+        if (!buckets.has(key)) buckets.set(key, { resolved: 0, failed: 0, cancelled: 0, durations: [] });
+        return buckets.get(key);
+      }
+
+      terminal.forEach((row) => {
+        const entry = ensure(bucketKey(new Date(row.updated_at * 1000), granularity));
+        if (row.status === "completed") {
+          entry.resolved += 1;
+          if (row.created_at) entry.durations.push(row.updated_at - row.created_at);
+        } else if (row.status === "failed") {
+          entry.failed += 1;
+        } else {
+          entry.cancelled += 1;
+        }
       });
 
       const labels = Array.from(buckets.keys());
       const resolved = labels.map((key) => buckets.get(key).resolved);
       const failed = labels.map((key) => buckets.get(key).failed);
+      const cancelled = labels.map((key) => buckets.get(key).cancelled);
       let runningTotal = 0;
       const cumulative = resolved.map((value) => {
         runningTotal += value;
         return runningTotal;
       });
+      const successRate = labels.map((key) => {
+        const entry = buckets.get(key);
+        const denom = entry.resolved + entry.failed;
+        return denom ? Math.round((entry.resolved / denom) * 100) : null;
+      });
+      const mttr = labels.map((key) => {
+        const durations = buckets.get(key).durations;
+        return durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : null;
+      });
 
-      return { labels, resolved, failed, cumulative, count: resolvedTasks.length };
+      return { labels, resolved, failed, cancelled, cumulative, successRate, mttr, count: terminal.length };
     }
 
-    function renderKpis(series) {
-      const totalResolved = series.resolved.reduce((sum, value) => sum + value, 0);
-      const totalFailed = series.failed.reduce((sum, value) => sum + value, 0);
+    function buildCategoryBreakdown(rows) {
+      const counts = { code_bug: 0, test_failure: 0, configuration: 0, session_error: 0 };
+      rows
+        .filter((row) => row.status === "failed")
+        .forEach((row) => {
+          const category = row.failure_category || "session_error";
+          if (counts[category] !== undefined) counts[category] += 1;
+          else counts.session_error += 1;
+        });
+      return counts;
+    }
+
+    function renderKpis(rows) {
+      const totalResolved = rows.filter((row) => row.status === "completed").length;
+      const totalFailed = rows.filter((row) => row.status === "failed").length;
       const handled = totalResolved + totalFailed;
       const successRate = handled ? Math.round((totalResolved / handled) * 100) : 0;
 
-      const durations = Object.values(latestTasks)
-        .filter((task) => task.status === "completed" && task.created_at && task.updated_at)
-        .map((task) => task.updated_at - task.created_at);
+      const durations = rows
+        .filter((row) => row.status === "completed" && row.created_at && row.updated_at)
+        .map((row) => row.updated_at - row.created_at);
       const avg = durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : null;
 
       const container = document.getElementById("analytics-kpis");
@@ -392,6 +651,20 @@
         summaryCard("Failed to Resolve", totalFailed, "text-rose-300"),
         summaryCard("Success Rate", `${successRate}%`, "text-indigo-300"),
         summaryCard("Avg Resolution", avg === null ? "&mdash;" : formatDuration(avg), "text-slate-100"),
+      ].join("");
+    }
+
+    function renderRoi(rows) {
+      const resolved = rows.filter((row) => row.status === "completed").length;
+      const total = rows.length;
+      const hoursSaved = resolved * avgHoursPerFix;
+      const autoRate = total ? Math.round((resolved / total) * 100) : 0;
+
+      const container = document.getElementById("roi-kpis");
+      container.innerHTML = [
+        summaryCard("Engineer-Hours Saved", `${hoursSaved.toFixed(1)}h`, "text-emerald-300"),
+        summaryCard("Auto-Resolved Issues", resolved, "text-indigo-300"),
+        summaryCard("Auto-Handled Rate", `${autoRate}%`, "text-slate-100"),
       ].join("");
     }
 
@@ -432,6 +705,7 @@
           datasets: [
             { label: "Resolved", data: series.resolved, backgroundColor: COLORS.resolved, borderRadius: 4 },
             { label: "Failed", data: series.failed, backgroundColor: COLORS.failed, borderRadius: 4 },
+            { label: "Cancelled", data: series.cancelled, backgroundColor: COLORS.cancelled, borderRadius: 4 },
           ],
         },
         options: {
@@ -469,10 +743,111 @@
       });
     }
 
+    function renderCategoryChart(counts) {
+      const canvas = document.getElementById("failure-chart");
+      const empty = document.getElementById("failure-empty");
+      const keys = Object.keys(counts).filter((key) => counts[key] > 0);
+      const hasData = keys.length > 0;
+
+      canvas.classList.toggle("hidden", !hasData);
+      empty.classList.toggle("hidden", hasData);
+
+      if (failureChart) failureChart.destroy();
+      if (!hasData) return;
+
+      failureChart = new Chart(canvas, {
+        type: "doughnut",
+        data: {
+          labels: keys.map((key) => CATEGORY_LABELS[key] || key),
+          datasets: [
+            {
+              data: keys.map((key) => counts[key]),
+              backgroundColor: keys.map((key) => CATEGORY_COLORS[key] || COLORS.cancelled),
+              borderColor: "#0f172a",
+              borderWidth: 2,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: "bottom", labels: { color: COLORS.text } } },
+        },
+      });
+    }
+
+    function renderTrendChart(series) {
+      const canvas = document.getElementById("trend-chart");
+      const empty = document.getElementById("trend-empty");
+      const hasData = series.count > 0;
+
+      canvas.classList.toggle("hidden", !hasData);
+      empty.classList.toggle("hidden", hasData);
+
+      if (trendChart) trendChart.destroy();
+      if (!hasData) return;
+
+      trendChart = new Chart(canvas, {
+        type: "line",
+        data: {
+          labels: series.labels,
+          datasets: [
+            {
+              label: "Success Rate %",
+              data: series.successRate,
+              borderColor: COLORS.resolved,
+              backgroundColor: "rgba(52, 211, 153, 0.15)",
+              yAxisID: "y",
+              tension: 0.3,
+              pointRadius: 3,
+              spanGaps: true,
+            },
+            {
+              label: "MTTR (s)",
+              data: series.mttr,
+              borderColor: COLORS.cumulative,
+              backgroundColor: "rgba(129, 140, 248, 0.15)",
+              yAxisID: "y1",
+              tension: 0.3,
+              pointRadius: 3,
+              spanGaps: true,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { labels: { color: COLORS.text } } },
+          scales: {
+            x: { grid: { color: COLORS.grid }, ticks: { color: COLORS.text } },
+            y: {
+              type: "linear",
+              position: "left",
+              beginAtZero: true,
+              max: 100,
+              grid: { color: COLORS.grid },
+              ticks: { color: COLORS.text, callback: (value) => `${value}%` },
+            },
+            y1: {
+              type: "linear",
+              position: "right",
+              beginAtZero: true,
+              grid: { drawOnChartArea: false },
+              ticks: { color: COLORS.text },
+            },
+          },
+        },
+      });
+    }
+
     function renderAnalytics() {
-      const series = buildSeries();
-      renderKpis(series);
+      const series = buildSeries(filteredRows);
+      renderKpis(filteredRows);
+      renderRoi(filteredRows);
       renderCharts(series);
+      renderCategoryChart(buildCategoryBreakdown(filteredRows));
+      renderTrendChart(series);
     }
 
     function renderGranularityControls() {
@@ -492,6 +867,24 @@
       });
     }
 
+    function renderFilterSummary() {
+      const shown = filteredRows.length;
+      const total = Object.keys(latestTasks).length;
+      document.getElementById("filter-summary").textContent = `Showing ${shown} of ${total} loaded task(s).`;
+    }
+
+    function populateRepositoryFilter() {
+      const select = document.getElementById("filter-repository");
+      const options = ["all", ...Array.from(repositoryOptions).sort()];
+      select.innerHTML = options
+        .map((value) => {
+          const label = value === "all" ? "All repositories" : escapeHtml(value);
+          const selected = value === filters.repository ? " selected" : "";
+          return `<option value="${escapeHtml(value)}"${selected}>${label}</option>`;
+        })
+        .join("");
+    }
+
     function setView(view) {
       currentView = view;
       document.getElementById("view-operations").classList.toggle("hidden", view !== "operations");
@@ -506,20 +899,50 @@
       if (view === "analytics") renderAnalytics();
     }
 
-    function render() {
+    function applyAndRender() {
+      filteredRows = computeFilteredRows();
+      renderSummary(computeSummary(filteredRows));
+      renderFilterSummary();
       renderTables();
       if (currentView === "analytics") renderAnalytics();
     }
 
+    function serverParams() {
+      const params = {};
+      if (filters.repository !== "all") params.repository = filters.repository;
+      if (filters.fromTs) params.from = String(filters.fromTs);
+      if (filters.toTs) params.to = String(filters.toTs);
+      return params;
+    }
+
+    async function fetchAllTasks(params) {
+      const headers = DASHBOARD_TOKEN ? { Authorization: "Bearer " + DASHBOARD_TOKEN } : {};
+      const collected = {};
+      let page = 1;
+      while (true) {
+        const query = new URLSearchParams({ ...params, page: String(page), page_size: String(PAGE_SIZE) });
+        const response = await fetch("/metrics?" + query.toString(), { headers });
+        if (!response.ok) return null;
+        const data = await response.json();
+        Object.assign(collected, data.tasks || {});
+        const total = data.total || 0;
+        const received = Object.keys(data.tasks || {}).length;
+        if (!received || page * PAGE_SIZE >= total) break;
+        page += 1;
+      }
+      return collected;
+    }
+
     async function refresh() {
       try {
-        const headers = DASHBOARD_TOKEN ? { Authorization: "Bearer " + DASHBOARD_TOKEN } : {};
-        const response = await fetch("/metrics", { headers });
-        if (!response.ok) return;
-        const data = await response.json();
-        latestTasks = data.tasks || {};
-        renderSummary(data.summary);
-        render();
+        const tasks = await fetchAllTasks(serverParams());
+        if (tasks === null) return;
+        latestTasks = tasks;
+        Object.values(latestTasks).forEach((task) => {
+          if (task.repository) repositoryOptions.add(task.repository);
+        });
+        populateRepositoryFilter();
+        applyAndRender();
         document.getElementById("last-updated").textContent =
           "Last updated: " + new Date().toLocaleTimeString();
       } catch (error) {
@@ -527,10 +950,182 @@
       }
     }
 
+    function showToast(message, ok) {
+      const toast = document.getElementById("toast");
+      toast.textContent = message;
+      toast.className =
+        "fixed bottom-4 right-4 z-50 rounded-md px-4 py-2 text-sm shadow-lg " +
+        (ok ? "bg-emerald-500/20 text-emerald-200 border border-emerald-500/40" : "bg-rose-500/20 text-rose-200 border border-rose-500/40");
+      toast.classList.remove("hidden");
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => toast.classList.add("hidden"), 3500);
+    }
+
+    function apiHeaders(extra) {
+      const headers = extra ? { ...extra } : {};
+      if (API_TOKEN) headers.Authorization = "Bearer " + API_TOKEN;
+      return headers;
+    }
+
+    async function runAction(action, taskId, button) {
+      button.disabled = true;
+      try {
+        const response = await fetch(`/tasks/${encodeURIComponent(taskId)}/${action}`, {
+          method: "POST",
+          headers: apiHeaders(),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (response.ok) {
+          showToast(`${action === "retry" ? "Retry" : "Cancel"} accepted for ${taskId}.`, true);
+          await refresh();
+        } else {
+          showToast(data.detail || `Failed to ${action} ${taskId} (${response.status}).`, false);
+          button.disabled = false;
+        }
+      } catch (error) {
+        showToast(`Network error while trying to ${action} ${taskId}.`, false);
+        button.disabled = false;
+      }
+    }
+
+    function wireActionDelegation(bodyId) {
+      document.getElementById(bodyId).addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-action]");
+        if (!button) return;
+        runAction(button.getAttribute("data-action"), button.getAttribute("data-task-id"), button);
+      });
+    }
+
+    function dateToTimestamp(value, endOfDay) {
+      if (!value) return null;
+      const suffix = endOfDay ? "T23:59:59" : "T00:00:00";
+      const millis = new Date(value + suffix).getTime();
+      return Number.isNaN(millis) ? null : Math.floor(millis / 1000);
+    }
+
+    function wireFilters() {
+      document.getElementById("filter-repository").addEventListener("change", (event) => {
+        filters.repository = event.target.value;
+        refresh();
+      });
+      document.getElementById("filter-status").addEventListener("change", (event) => {
+        filters.status = event.target.value;
+        applyAndRender();
+      });
+      document.getElementById("filter-category").addEventListener("change", (event) => {
+        filters.category = event.target.value;
+        applyAndRender();
+      });
+      document.getElementById("filter-search").addEventListener("input", (event) => {
+        filters.search = event.target.value.trim();
+        applyAndRender();
+      });
+      document.getElementById("filter-from").addEventListener("change", (event) => {
+        filters.fromTs = dateToTimestamp(event.target.value, false);
+        refresh();
+      });
+      document.getElementById("filter-to").addEventListener("change", (event) => {
+        filters.toTs = dateToTimestamp(event.target.value, true);
+        refresh();
+      });
+      document.getElementById("filter-clear").addEventListener("click", () => {
+        filters.repository = "all";
+        filters.status = "all";
+        filters.category = "all";
+        filters.search = "";
+        filters.fromTs = null;
+        filters.toTs = null;
+        document.getElementById("filter-status").value = "all";
+        document.getElementById("filter-category").value = "all";
+        document.getElementById("filter-search").value = "";
+        document.getElementById("filter-from").value = "";
+        document.getElementById("filter-to").value = "";
+        refresh();
+      });
+      document.getElementById("avg-hours-input").addEventListener("input", (event) => {
+        const value = parseFloat(event.target.value);
+        avgHoursPerFix = Number.isNaN(value) || value < 0 ? 0 : value;
+        renderRoi(filteredRows);
+      });
+    }
+
+    function setTriggerFeedback(message, ok) {
+      const feedback = document.getElementById("trigger-feedback");
+      if (!message) {
+        feedback.classList.add("hidden");
+        return;
+      }
+      feedback.textContent = message;
+      feedback.className =
+        "rounded-md px-3 py-2 text-sm " +
+        (ok ? "bg-emerald-500/20 text-emerald-200" : "bg-rose-500/20 text-rose-200");
+      feedback.classList.remove("hidden");
+    }
+
+    function openTriggerModal() {
+      setTriggerFeedback("", false);
+      document.getElementById("trigger-modal").classList.remove("hidden");
+    }
+
+    function closeTriggerModal() {
+      document.getElementById("trigger-modal").classList.add("hidden");
+    }
+
+    async function submitTrigger(event) {
+      event.preventDefault();
+      const form = event.target;
+      const payload = {
+        issue_id: form.issue_id.value.trim(),
+        title: form.title.value.trim(),
+        description: form.description.value.trim(),
+        repository: form.repository.value.trim(),
+        branch: form.branch.value.trim() || "main",
+      };
+      const submit = document.getElementById("trigger-submit");
+      submit.disabled = true;
+      setTriggerFeedback("Submitting&hellip;", true);
+      try {
+        const response = await fetch("/remediate", {
+          method: "POST",
+          headers: apiHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (response.ok) {
+          const label = data.status === "duplicate" ? "Duplicate in-flight task" : "Remediation accepted";
+          setTriggerFeedback(`${label}: ${data.task_id || ""}`, true);
+          form.reset();
+          form.branch.value = "main";
+          await refresh();
+        } else {
+          const detail = typeof data.detail === "string" ? data.detail : `Request failed (${response.status}).`;
+          setTriggerFeedback(detail, false);
+        }
+      } catch (error) {
+        setTriggerFeedback("Network error while submitting the request.", false);
+      } finally {
+        submit.disabled = false;
+      }
+    }
+
+    function wireTrigger() {
+      document.getElementById("open-trigger").addEventListener("click", openTriggerModal);
+      document.getElementById("trigger-close").addEventListener("click", closeTriggerModal);
+      document.getElementById("trigger-cancel").addEventListener("click", closeTriggerModal);
+      document.getElementById("trigger-form").addEventListener("submit", submitTrigger);
+      document.getElementById("trigger-modal").addEventListener("click", (event) => {
+        if (event.target.id === "trigger-modal") closeTriggerModal();
+      });
+    }
+
     document.querySelectorAll(".tab-button").forEach((button) => {
       button.addEventListener("click", () => setView(button.getAttribute("data-view")));
     });
 
+    wireFilters();
+    wireTrigger();
+    wireActionDelegation("active-body");
+    wireActionDelegation("resolved-body");
     renderGranularityControls();
     setView("operations");
     refresh();

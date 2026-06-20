@@ -9,7 +9,8 @@ ASOC is a FastAPI service that sits between your GitHub repositories and the Dev
 - Event-driven: triggered by GitHub issue labels or direct API calls.
 - Autonomous: each job spins up a Devin session with a structured remediation prompt.
 - Closed-loop: the orchestrator tracks each session to completion, then reports the outcome back on the issue.
-- Observable: a built-in dashboard surfaces active sessions, resolved issues, MTTR, and categorized failure reasons.
+- Observable: a built-in dashboard surfaces active sessions, resolved issues, MTTR, categorized failure reasons, business-value KPIs, and trend charts, with filtering, drill-down links, and in-place retry/cancel controls.
+- Actionable: failed remediations can be re-enqueued and in-flight ones cancelled directly from the dashboard or API, and new work can be triggered from a built-in form.
 - Durable: job history is persisted to a local SQLite database and reloaded on startup, in-flight sessions are resumed automatically after a restart, and a pre-existing `tasks.json` is imported once so no history is lost.
 - Resilient: transient Devin and GitHub failures are retried with exponential backoff, and a configurable cap bounds the number of concurrent in-flight sessions.
 - Operable: every task state transition is emitted as structured JSON logging, and a health endpoint exposes database readiness.
@@ -42,7 +43,7 @@ GitHub Webhook  ->  FastAPI Orchestrator  ->  Devin API
 
 ### Task lifecycle
 
-Each task is persisted with `issue_id`, `status`, `session_id`, `pr_url`, `failure_category`, `failure_reason`, `created_at`, `updated_at`, and `error`. Status transitions are `queued -> running -> completed` or `queued -> running -> failed`.
+Each task is persisted with `issue_id`, `status`, `session_id`, `pr_url`, `failure_category`, `failure_reason`, `created_at`, `updated_at`, and `error`. Status transitions are `queued -> running -> completed` or `queued -> running -> failed`. A `queued` or `running` task can also be moved to the terminal `cancelled` state via `POST /tasks/{task_id}/cancel`; cancellation is treated as resolved/terminal and rendered with a distinct badge.
 
 ### Autonomous workflow contract
 
@@ -57,8 +58,10 @@ Every Devin session is dispatched with a prompt that enforces a closed-loop patt
 | Method | Path | Triggers |
 | ------ | ---- | -------- |
 | `POST` | `/remediate` | Manually enqueues a remediation job from a JSON payload and starts a Devin session in the background. |
+| `POST` | `/tasks/{task_id}/retry` | Re-enqueues a `failed` task as a brand-new remediation, reusing the original issue details and respecting the concurrency cap and in-flight de-duplication. |
+| `POST` | `/tasks/{task_id}/cancel` | Marks a `queued` or `running` task as `cancelled` (a terminal state) and stops its polling loop. |
 | `POST` | `/webhooks/github` | Receives GitHub issue events; when an issue is labeled `trigger-devin`, enqueues a remediation job automatically. |
-| `GET` | `/metrics` | Returns server-side summary aggregates (queued, running, completed, failed, MTTR/MTTF) and a filterable, paginated page of tasks. |
+| `GET` | `/metrics` | Returns server-side summary aggregates (queued, running, completed, failed, cancelled, MTTR/MTTF) and a filterable, paginated page of tasks. |
 | `GET` | `/healthz` | Liveness/readiness probe; returns `{"status": "ok"}` after a lightweight database connectivity check. |
 | `GET` | `/` | Serves the observability dashboard. |
 
@@ -82,6 +85,14 @@ Returns `{"status": "duplicate", "task_id": <existing>}` instead of starting a s
 
 When `ASOC_API_TOKEN` is set, the request must include an `Authorization: Bearer <ASOC_API_TOKEN>` header or it is rejected with `401`.
 
+### `POST /tasks/{task_id}/retry`
+
+Re-runs a remediation for a task whose `status` is `failed`. The orchestrator reconstructs the original remediation request (issue, title, description, repository, branch) and pushes it back through the standard enqueue path, so the concurrency cap and in-flight de-duplication both apply. It returns `{"status": "accepted", "task_id": <new>, "source_task_id": <original>}`, or `{"status": "duplicate", ...}` when an in-flight job already exists for that repository and issue. Retrying a task that is not `failed` returns `409`, and an unknown `task_id` returns `404`. Protected by `ASOC_API_TOKEN` when set.
+
+### `POST /tasks/{task_id}/cancel`
+
+Marks a `queued` or `running` task as `cancelled`, a terminal state, and signals its polling loop to stop so it neither completes nor fails afterwards. It returns `{"status": "cancelled", "task_id": <id>}`. Cancelling a task that is already terminal returns `409`, and an unknown `task_id` returns `404`. Protected by `ASOC_API_TOKEN` when set.
+
 ### `POST /webhooks/github`
 
 Consumes GitHub `issues` webhook events. When the action is `labeled` and the label is `trigger-devin`, the orchestrator builds a remediation request from the issue payload and enqueues it automatically. Like `/remediate`, it de-duplicates in-flight jobs for the same `repository` and `issue_id`.
@@ -90,13 +101,38 @@ When `GITHUB_WEBHOOK_SECRET` is set, every request is verified against its `X-Hu
 
 ## Observability
 
-A live dashboard is served at http://localhost:8000 and refreshes every 10 seconds. It queries the `/metrics` endpoint and renders:
+A live dashboard is served at http://localhost:8000 and refreshes every 10 seconds. It queries the `/metrics` endpoint and renders an Operations tab and an Analytics tab.
 
-- Summary cards: total jobs, queued, running, completed, failed, and mean time to resolution.
-- Active Sessions: a sortable table of queued or running tasks, with their issue, repository, session id, and start time.
-- Resolved Issues: a sortable table of completed or failed tasks, showing the Pull Request link for successes and a UI-friendly failure category and reason for failures.
+The Operations tab shows:
+
+- Summary cards: total jobs, queued, running, completed, failed, cancelled, and mean time to resolution.
+- Active Sessions: a sortable table of queued or running tasks, with their issue, repository, session id, start time, and a per-row Cancel action.
+- Resolved Issues: a sortable table of completed, failed, or cancelled tasks, showing the Pull Request link for successes, a UI-friendly failure category and reason for failures, and a per-row Retry action for failures.
 
 Both tables are sortable by clicking any column header.
+
+### Filtering and search
+
+A filter bar above both tabs drives the tables and every chart simultaneously. It exposes a repository dropdown (derived from the loaded data), a status dropdown (including `cancelled`), a failure-category dropdown, a free-text search box (matching issue, title, repository, session id, and failure reason), and a `From`/`To` date range. The repository and date-range filters are pushed to `/metrics` as server-side query parameters; the remaining filters are applied client-side. A `Clear filters` button resets everything.
+
+### Drill-down links and actions
+
+In both tables the `session_id` links to its Devin session (`https://app.devin.ai/sessions/<id>`) and the issue links to its GitHub issue (`https://github.com/<repository>/issues/<issue_id>`). Per-row `Retry` (failed tasks) and `Cancel` (queued/running tasks) buttons call `POST /tasks/{task_id}/retry` and `POST /tasks/{task_id}/cancel`, then refresh; when `ASOC_API_TOKEN` is configured the dashboard sends it as a bearer token automatically.
+
+### Manual trigger form
+
+A `Trigger Remediation` button opens a theme-matched modal with repository, issue id, title, description, and branch fields that `POST`s to `/remediate` (sending the bearer token when configured) and reports success, duplicate, or error inline.
+
+### Analytics
+
+The Analytics tab adds:
+
+- KPI cards: issues resolved, failed to resolve, success rate, and average resolution time.
+- Business-value KPIs: estimated engineer-hours saved (resolved count times a configurable average hours-per-fix input, default `4`), auto-resolved issue count, and auto-handled rate (resolved divided by total triggered). The math is shown inline.
+- Remediation Throughput: a grouped-bar chart of resolved, failed, and cancelled issues over time, with a Day/Week/Month/Year granularity toggle.
+- Cumulative Issues Resolved: a running-total line chart.
+- Failure Breakdown: a donut chart of failure categories (`code_bug`, `test_failure`, `configuration`, `session_error`).
+- Quality Trends: a dual-axis line chart of success-rate and MTTR over time, using the same granularity toggle.
 
 ### Querying metrics
 
@@ -104,7 +140,7 @@ Both tables are sortable by clicking any column header.
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| `status` | – | Only include tasks with this status (`queued`, `running`, `completed`, `failed`). |
+| `status` | – | Only include tasks with this status (`queued`, `running`, `completed`, `failed`, `cancelled`). |
 | `repository` | – | Only include tasks for this `owner/name` repository. |
 | `from` | – | Unix timestamp; only include tasks created at or after this time. |
 | `to` | – | Unix timestamp; only include tasks created at or before this time. |
@@ -121,6 +157,7 @@ The response stays backward compatible, adding pagination metadata alongside the
     "running": 2,
     "completed": 7,
     "failed": 2,
+    "cancelled": 0,
     "mean_time_to_resolution_seconds": 134.5,
     "mean_time_to_failure_seconds": 88.0
   },
@@ -148,6 +185,8 @@ Failures originate in two places:
 | `test_failure` | The fix did not pass the project's test suite. |
 | `configuration` | An environment, credentials, or setup problem, including all orchestrator-side API errors. |
 | `session_error` | Fallback when a session ends in a non-success state (such as `expired` or `blocked`) without reporting a supported category. |
+
+A task that an operator stops via `POST /tasks/{task_id}/cancel` is recorded with `status` `cancelled` rather than `failed`; it is a deliberate terminal state, carries no failure category, and is rendered with its own badge.
 
 ### Local persistence
 
