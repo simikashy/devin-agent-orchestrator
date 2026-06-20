@@ -114,6 +114,11 @@ class TaskStore:
             ).fetchone()
         return self._row_to_task(row)
 
+    def delete_task(self, task_id: str) -> bool:
+        with self._cursor() as connection:
+            cursor = connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            return cursor.rowcount > 0
+
     def find_in_flight(
         self, repository: str, issue_id: str, statuses: Tuple[str, ...]
     ) -> Optional[str]:

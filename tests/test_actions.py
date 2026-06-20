@@ -35,3 +35,25 @@ def test_cancel_terminal_conflict(client, store):
 
 def test_cancel_unknown_task_not_found(client, store):
     assert client.post("/tasks/missing/cancel").status_code == 404
+
+
+def test_remove_failed_task_deletes_record(client, store):
+    store.insert_task("rm1", make_task(status="failed", repository="o/r", issue_id="9"))
+    response = client.request("DELETE", "/tasks/rm1")
+    assert response.status_code == 200
+    assert response.json() == {"status": "removed", "task_id": "rm1"}
+    assert store.get_task("rm1") is None
+
+
+def test_remove_unknown_task_not_found(client, store):
+    assert client.request("DELETE", "/tasks/missing").status_code == 404
+
+
+def test_removed_task_excluded_from_metrics(client, store):
+    store.insert_task("keep", make_task(status="completed"))
+    store.insert_task("gone", make_task(status="failed"))
+    assert client.request("DELETE", "/tasks/gone").status_code == 200
+    summary = client.get("/metrics").json()["summary"]
+    assert summary["total_triggered_jobs"] == 1
+    assert summary["failed"] == 0
+    assert summary["completed"] == 1

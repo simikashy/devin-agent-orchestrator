@@ -42,6 +42,15 @@ def test_query_orders_by_created_desc(tmp_path):
     assert [tid for tid, _ in store.query_tasks()] == ["new", "mid", "old"]
 
 
+def test_delete_task_round_trip(tmp_path):
+    store = TaskStore(tmp_path / "t.db")
+    store.insert_task("a", make_task())
+    assert store.delete_task("a") is True
+    assert store.get_task("a") is None
+    assert store.count() == 0
+    assert store.delete_task("a") is False
+
+
 def test_find_in_flight(tmp_path):
     store = TaskStore(tmp_path / "t.db")
     store.insert_task("a", make_task(repository="o/a", issue_id="7", status="running"))

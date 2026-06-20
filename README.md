@@ -60,6 +60,7 @@ Every Devin session is dispatched with a prompt that enforces a closed-loop patt
 | `POST` | `/remediate` | Manually enqueues a remediation job from a JSON payload and starts a Devin session in the background. |
 | `POST` | `/tasks/{task_id}/retry` | Re-enqueues a `failed` task as a brand-new remediation, reusing the original issue details and respecting the concurrency cap and in-flight de-duplication. |
 | `POST` | `/tasks/{task_id}/cancel` | Marks a `queued` or `running` task as `cancelled` (a terminal state) and stops its polling loop. |
+| `DELETE` | `/tasks/{task_id}` | Permanently removes a task's record so it disappears from every table, chart, KPI, leaderboard, and the CSV export. |
 | `POST` | `/webhooks/github` | Receives GitHub issue events; when an issue is labeled `trigger-devin`, enqueues a remediation job automatically. |
 | `GET` | `/metrics` | Returns server-side summary aggregates (queued, running, completed, failed, cancelled, MTTR/MTTF) and a filterable, paginated page of tasks. |
 | `GET` | `/export/tasks.csv` | Streams the matching tasks (same filters as `/metrics`) as a downloadable CSV file. |
@@ -94,6 +95,10 @@ Re-runs a remediation for a task whose `status` is `failed`. The orchestrator re
 
 Marks a `queued` or `running` task as `cancelled`, a terminal state, and signals its polling loop to stop so it neither completes nor fails afterwards. It returns `{"status": "cancelled", "task_id": <id>}`. Cancelling a task that is already terminal returns `409`, and an unknown `task_id` returns `404`. Protected by `ASOC_API_TOKEN` when set.
 
+### `DELETE /tasks/{task_id}`
+
+Permanently deletes a task's record from the store. Because every dashboard table, summary card, chart, ROI KPI, repository leaderboard, and the CSV export are all derived from `/metrics` (which reads the store), a removed task is no longer displayed or counted anywhere. If the task is still `queued` or `running`, its polling loop is signaled to stop first so it cannot be re-persisted. It returns `{"status": "removed", "task_id": <id>}`, and an unknown `task_id` returns `404`. Protected by `ASOC_API_TOKEN` when set.
+
 ### `POST /webhooks/github`
 
 Consumes GitHub `issues` webhook events. When the action is `labeled` and the label is `trigger-devin`, the orchestrator builds a remediation request from the issue payload and enqueues it automatically. Like `/remediate`, it de-duplicates in-flight jobs for the same `repository` and `issue_id`.
@@ -108,7 +113,7 @@ The Operations tab shows:
 
 - Summary cards: total jobs, queued, running, completed, failed, cancelled, and mean time to resolution.
 - Active Sessions: a sortable table of queued or running tasks, with their issue, repository, session id, start time, and a per-row Cancel action.
-- Resolved Issues: a sortable table of completed, failed, or cancelled tasks, showing the Pull Request link for successes, a UI-friendly failure category and reason for failures, and a per-row Retry action for failures.
+- Resolved Issues: a sortable table of completed, failed, or cancelled tasks, showing the Pull Request link for successes, a UI-friendly failure category and reason for failures, and per-row Retry (failures) and Remove actions.
 
 Both tables are sortable by clicking any column header.
 
@@ -118,7 +123,7 @@ A filter bar above both tabs drives the tables and every chart simultaneously. I
 
 ### Drill-down links and actions
 
-In both tables the `session_id` links to its Devin session (`https://app.devin.ai/sessions/<id>`) and the issue links to its GitHub issue (`https://github.com/<repository>/issues/<issue_id>`). Per-row `Retry` (failed tasks) and `Cancel` (queued/running tasks) buttons call `POST /tasks/{task_id}/retry` and `POST /tasks/{task_id}/cancel`, then refresh; when `ASOC_API_TOKEN` is configured the dashboard sends it as a bearer token automatically.
+In both tables the `session_id` links to its Devin session (`https://app.devin.ai/sessions/<id>`) and the issue links to its GitHub issue (`https://github.com/<repository>/issues/<issue_id>`). Per-row `Retry` (failed tasks), `Cancel` (queued/running tasks), and `Remove` (any task) buttons call `POST /tasks/{task_id}/retry`, `POST /tasks/{task_id}/cancel`, and `DELETE /tasks/{task_id}` respectively, then refresh; when `ASOC_API_TOKEN` is configured the dashboard sends it as a bearer token automatically. `Remove` asks for confirmation, then permanently deletes the record so it is excluded from every table, chart, and KPI.
 
 ### Manual trigger form
 
