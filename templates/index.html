@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ASOC Orchestrator Dashboard</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.0/dist/index.global.min.js" integrity="sha384-d5Pc0U2WLIrcpPz/5dTNl91xwJLvbdD+V3+kao+QnRyFRNDW1mKqxoM9b6fzPxsS" crossorigin="anonymous"></script>
+  <script src="/static/chart.umd.min.js"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
   <div class="max-w-6xl mx-auto px-6 py-10">
@@ -70,7 +70,10 @@
       </div>
       <div class="flex items-center justify-between mt-3">
         <p id="filter-summary" class="text-xs text-slate-500"></p>
-        <button id="filter-clear" class="px-3 py-1.5 rounded-md text-xs bg-slate-800 text-slate-300 hover:bg-slate-700">Clear filters</button>
+        <div class="flex items-center gap-2">
+          <button id="export-csv" class="px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30">Export CSV</button>
+          <button id="filter-clear" class="px-3 py-1.5 rounded-md text-xs bg-slate-800 text-slate-300 hover:bg-slate-700">Clear filters</button>
+        </div>
       </div>
     </section>
 
@@ -116,6 +119,19 @@
         </div>
         <div id="roi-kpis" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
         <p class="text-xs text-slate-500 mt-2">Engineer-hours saved = resolved issues &times; avg hours per fix. Auto-handled rate = resolved &divide; total triggered.</p>
+      </section>
+
+      <section class="mb-10">
+        <h2 class="text-lg font-medium mb-3">Repository Leaderboard</h2>
+        <p class="text-xs text-slate-500 mb-2">Per-repository remediation breakdown across the current filtered view. Click a column header to sort.</p>
+        <div class="overflow-x-auto rounded-lg border border-slate-800">
+          <table class="min-w-full text-sm">
+            <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
+              <tr id="leaderboard-head"></tr>
+            </thead>
+            <tbody id="leaderboard-body" class="divide-y divide-slate-800"></tbody>
+          </table>
+        </div>
       </section>
 
       <div class="flex items-center justify-between mb-3">
@@ -254,6 +270,15 @@
       { key: "actions", label: "Actions", type: "text", sortable: false },
     ];
 
+    const LEADERBOARD_COLUMNS = [
+      { key: "repository", label: "Repository", type: "text" },
+      { key: "total", label: "Total", type: "number" },
+      { key: "resolved", label: "Resolved", type: "number" },
+      { key: "failed", label: "Failed", type: "number" },
+      { key: "success_rate", label: "Success Rate", type: "number" },
+      { key: "avg_resolution", label: "Avg Resolution", type: "number" },
+    ];
+
     const GRANULARITIES = [
       { key: "day", label: "Day" },
       { key: "week", label: "Week" },
@@ -281,6 +306,7 @@
 
     const activeSort = { key: "created_at", dir: "desc" };
     const resolvedSort = { key: "updated_at", dir: "desc" };
+    const leaderboardSort = { key: "total", dir: "desc" };
     const repositoryOptions = new Set();
     let latestTasks = {};
     let filteredRows = [];
@@ -542,14 +568,14 @@
         : emptyRow(RESOLVED_COLUMNS.length);
     }
 
-    function toggleSort(state, key) {
+    function toggleSort(state, key, render) {
       if (state.key === key) {
         state.dir = state.dir === "asc" ? "desc" : "asc";
       } else {
         state.key = key;
         state.dir = "asc";
       }
-      renderTables();
+      (render || renderTables)();
     }
 
     function sortActive(key) {
@@ -558,6 +584,10 @@
 
     function sortResolved(key) {
       toggleSort(resolvedSort, key);
+    }
+
+    function sortLeaderboard(key) {
+      toggleSort(leaderboardSort, key, renderLeaderboard);
     }
 
     function pad(value) {
@@ -841,10 +871,75 @@
       });
     }
 
+    function buildLeaderboard(rows) {
+      const groups = new Map();
+      rows.forEach((row) => {
+        const repo = row.repository || "(unknown)";
+        if (!groups.has(repo)) {
+          groups.set(repo, { repository: repo, total: 0, resolved: 0, failed: 0, durations: [] });
+        }
+        const entry = groups.get(repo);
+        entry.total += 1;
+        if (row.status === "completed") {
+          entry.resolved += 1;
+          if (row.created_at && row.updated_at) entry.durations.push(row.updated_at - row.created_at);
+        } else if (row.status === "failed") {
+          entry.failed += 1;
+        }
+      });
+      return Array.from(groups.values()).map((entry) => {
+        const handled = entry.resolved + entry.failed;
+        const avg = entry.durations.length
+          ? entry.durations.reduce((sum, value) => sum + value, 0) / entry.durations.length
+          : null;
+        return {
+          repository: entry.repository,
+          total: entry.total,
+          resolved: entry.resolved,
+          failed: entry.failed,
+          success_rate: handled ? Math.round((entry.resolved / handled) * 100) : null,
+          avg_resolution: avg,
+        };
+      });
+    }
+
+    function leaderboardCell(row, key) {
+      if (key === "repository") return `<td class="px-4 py-3 text-slate-300">${escapeHtml(row.repository)}</td>`;
+      if (key === "total") return `<td class="px-4 py-3 text-slate-100">${row.total}</td>`;
+      if (key === "resolved") return `<td class="px-4 py-3 text-emerald-300">${row.resolved}</td>`;
+      if (key === "failed") return `<td class="px-4 py-3 text-rose-300">${row.failed}</td>`;
+      if (key === "success_rate") {
+        const value = row.success_rate === null ? "&mdash;" : `${row.success_rate}%`;
+        return `<td class="px-4 py-3 text-indigo-300">${value}</td>`;
+      }
+      if (key === "avg_resolution") {
+        return `<td class="px-4 py-3 text-slate-400">${row.avg_resolution === null ? "&mdash;" : formatDuration(row.avg_resolution)}</td>`;
+      }
+      return "<td class=\"px-4 py-3\"></td>";
+    }
+
+    function renderLeaderboard() {
+      const rows = buildLeaderboard(filteredRows);
+      const column =
+        LEADERBOARD_COLUMNS.find((col) => col.key === leaderboardSort.key) || LEADERBOARD_COLUMNS[0];
+      rows.sort((a, b) => compareRows(a, b, column, leaderboardSort.dir));
+      renderHead("leaderboard-head", LEADERBOARD_COLUMNS, leaderboardSort, sortLeaderboard);
+      const body = document.getElementById("leaderboard-body");
+      body.innerHTML = rows.length
+        ? rows
+            .map(
+              (row) =>
+                `<tr class="hover:bg-slate-900/40">${LEADERBOARD_COLUMNS.map((col) => leaderboardCell(row, col.key)).join("")}</tr>`
+            )
+            .join("")
+        : emptyRow(LEADERBOARD_COLUMNS.length);
+    }
+
     function renderAnalytics() {
       const series = buildSeries(filteredRows);
       renderKpis(filteredRows);
       renderRoi(filteredRows);
+      renderLeaderboard();
       renderCharts(series);
       renderCategoryChart(buildCategoryBreakdown(filteredRows));
       renderTrendChart(series);
@@ -1003,7 +1098,37 @@
       return Number.isNaN(millis) ? null : Math.floor(millis / 1000);
     }
 
+    async function exportCsv(button) {
+      const params = serverParams();
+      if (filters.status !== "all") params.status = filters.status;
+      const query = new URLSearchParams(params);
+      const headers = DASHBOARD_TOKEN ? { Authorization: "Bearer " + DASHBOARD_TOKEN } : {};
+      button.disabled = true;
+      try {
+        const response = await fetch("/export/tasks.csv?" + query.toString(), { headers });
+        if (!response.ok) {
+          showToast(`Export failed (${response.status}).`, false);
+          return;
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "tasks.csv";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        showToast("Exported current view to tasks.csv.", true);
+      } catch (error) {
+        showToast("Network error during export.", false);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     function wireFilters() {
+      document.getElementById("export-csv").addEventListener("click", (event) => exportCsv(event.currentTarget));
       document.getElementById("filter-repository").addEventListener("change", (event) => {
         filters.repository = event.target.value;
         refresh();

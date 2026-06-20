@@ -62,6 +62,7 @@ Every Devin session is dispatched with a prompt that enforces a closed-loop patt
 | `POST` | `/tasks/{task_id}/cancel` | Marks a `queued` or `running` task as `cancelled` (a terminal state) and stops its polling loop. |
 | `POST` | `/webhooks/github` | Receives GitHub issue events; when an issue is labeled `trigger-devin`, enqueues a remediation job automatically. |
 | `GET` | `/metrics` | Returns server-side summary aggregates (queued, running, completed, failed, cancelled, MTTR/MTTF) and a filterable, paginated page of tasks. |
+| `GET` | `/export/tasks.csv` | Streams the matching tasks (same filters as `/metrics`) as a downloadable CSV file. |
 | `GET` | `/healthz` | Liveness/readiness probe; returns `{"status": "ok"}` after a lightweight database connectivity check. |
 | `GET` | `/` | Serves the observability dashboard. |
 
@@ -113,7 +114,7 @@ Both tables are sortable by clicking any column header.
 
 ### Filtering and search
 
-A filter bar above both tabs drives the tables and every chart simultaneously. It exposes a repository dropdown (derived from the loaded data), a status dropdown (including `cancelled`), a failure-category dropdown, a free-text search box (matching issue, title, repository, session id, and failure reason), and a `From`/`To` date range. The repository and date-range filters are pushed to `/metrics` as server-side query parameters; the remaining filters are applied client-side. A `Clear filters` button resets everything.
+A filter bar above both tabs drives the tables and every chart simultaneously. It exposes a repository dropdown (derived from the loaded data), a status dropdown (including `cancelled`), a failure-category dropdown, a free-text search box (matching issue, title, repository, session id, and failure reason), and a `From`/`To` date range. The repository and date-range filters are pushed to `/metrics` as server-side query parameters; the remaining filters are applied client-side. A `Clear filters` button resets everything. An `Export CSV` button downloads the current server-filtered view (repository, status, and date range) through `GET /export/tasks.csv`.
 
 ### Drill-down links and actions
 
@@ -128,6 +129,7 @@ A `Trigger Remediation` button opens a theme-matched modal with repository, issu
 The Analytics tab adds:
 
 - KPI cards: issues resolved, failed to resolve, success rate, and average resolution time.
+- Repository Leaderboard: a sortable per-repository table of total handled, resolved, failed, success rate, and average resolution time, computed client-side from the loaded metrics and matching the existing table styling.
 - Business-value KPIs: estimated engineer-hours saved (resolved count times a configurable average hours-per-fix input, default `4`), auto-resolved issue count, and auto-handled rate (resolved divided by total triggered). The math is shown inline.
 - Remediation Throughput: a grouped-bar chart of resolved, failed, and cancelled issues over time, with a Day/Week/Month/Year granularity toggle.
 - Cumulative Issues Resolved: a running-total line chart.
@@ -170,6 +172,10 @@ The response stays backward compatible, adding pagination metadata alongside the
 
 The `summary` aggregates are always computed server-side over the full filtered set, not just the returned page. `mean_time_to_resolution_seconds` now covers completed tasks only, and `mean_time_to_failure_seconds` covers failed tasks only.
 
+### Exporting tasks as CSV
+
+`GET /export/tasks.csv` streams the matching tasks as a downloadable CSV with the columns `task_id`, `issue_id`, `repository`, `status`, `failure_category`, `failure_reason`, `pr_url`, `created_at`, `updated_at`, and `duration`. Timestamps are emitted as UTC ISO-8601 strings and `duration` is the resolution time in seconds. It accepts the same `status`, `repository`, `from`, and `to` filters as `/metrics`, so the dashboard `Export CSV` button downloads exactly the current server-filtered view. The response is rendered incrementally with a `text/csv` media type and a `Content-Disposition: attachment; filename="tasks.csv"` header. When `ASOC_DASHBOARD_TOKEN` is set, the endpoint requires the same bearer token as `/metrics`.
+
 ### Failure handling
 
 When remediation does not succeed, the task is recorded with `status` `failed`, a `failure_category`, and a human-readable `failure_reason`. The orchestrator then posts a final comment on the issue in the form `Autonomous remediation failed in ASOC pipeline. Failure category: <category>. Reason: <reason>`, and the dashboard renders the category as a badge alongside the reason.
@@ -191,6 +197,27 @@ A task that an operator stops via `POST /tasks/{task_id}/cancel` is recorded wit
 ### Local persistence
 
 The orchestrator stores its task history in a local SQLite database (`asoc.db`) in the project root, using Python's standard-library `sqlite3` with no extra infrastructure. Writes are serialized so concurrent background polling cannot corrupt the store. The database is reloaded automatically on startup, so dashboard metrics persist across server restarts. On first startup, a pre-existing `tasks.json` is imported once and then renamed to `tasks.json.imported`. The database file is local runtime state and is excluded from version control.
+
+## Front-end dependencies
+
+The dashboard is a single static template with no Node or build pipeline. Its two third-party libraries are pinned to reduce supply-chain and offline risk:
+
+- Chart.js is vendored locally. The pinned UMD build (`static/chart.umd.min.js`) is committed to the repository and served by FastAPI through `StaticFiles` at `/static/chart.umd.min.js`, so the dashboard does not depend on a CDN at runtime.
+- Tailwind is pinned to an exact version (`@tailwindcss/browser@4.3.0`) loaded over a CORS-enabled CDN with a Subresource Integrity (`integrity` + `crossorigin`) attribute, so the browser refuses to execute a script whose contents do not match the pinned hash.
+
+## Testing and continuous integration
+
+The test suite uses `pytest` with FastAPI's `TestClient` and mocks every external Devin and GitHub call, so it never touches the network. It covers webhook signature verification (valid, invalid, and absent), endpoint authentication (open when unset, required when set), idempotency/de-duplication, the SQLite store load/save/update round-trip, `/metrics` filtering with summary and MTTR/MTTF math, the retry and cancel endpoints, the remediation lifecycle, and the CSV export.
+
+Install the development dependencies and run the suite from the project root:
+
+```bash
+pip install -r requirements-dev.txt
+ruff check .
+pytest
+```
+
+A GitHub Actions workflow at `.github/workflows/ci.yml` runs the linter (`ruff check .`) and the test suite (`pytest -q`) on every push and pull request.
 
 ## How to Run
 

@@ -2,6 +2,8 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+import io
+import csv
 import json
 import time
 import uuid
@@ -13,9 +15,10 @@ import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Tuple
 from fastapi import FastAPI, Header, Request, HTTPException, Depends, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import requests
 
@@ -47,6 +50,22 @@ BASE_DIR = Path(__file__).resolve().parent
 TASKS_FILE = BASE_DIR / "tasks.json"
 DB_FILE = BASE_DIR / "asoc.db"
 TEMPLATES_DIR = BASE_DIR / "templates"
+STATIC_DIR = BASE_DIR / "static"
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+CSV_EXPORT_HEADERS = (
+    "task_id",
+    "issue_id",
+    "repository",
+    "status",
+    "failure_category",
+    "failure_reason",
+    "pr_url",
+    "created_at",
+    "updated_at",
+    "duration",
+)
 
 DEVIN_REQUEST_TIMEOUT = 30
 SESSION_POLL_INTERVAL_SECONDS = 15
@@ -709,6 +728,65 @@ async def get_metrics(
         "page_size": page_size,
         "total": total,
     }
+
+
+def task_duration_seconds(task: dict) -> Optional[float]:
+    created = task.get("created_at")
+    updated = task.get("updated_at")
+    if created and updated:
+        return round(updated - created, 2)
+    return None
+
+
+def isoformat_timestamp(value: Optional[float]) -> str:
+    if not value:
+        return ""
+    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
+def csv_row_for_task(task_id: str, task: dict) -> List[object]:
+    duration = task_duration_seconds(task)
+    return [
+        task_id,
+        task.get("issue_id") or "",
+        task.get("repository") or "",
+        task.get("status") or "",
+        task.get("failure_category") or "",
+        task.get("failure_reason") or "",
+        task.get("pr_url") or "",
+        isoformat_timestamp(task.get("created_at")),
+        isoformat_timestamp(task.get("updated_at")),
+        "" if duration is None else duration,
+    ]
+
+
+@app.get("/export/tasks.csv")
+async def export_tasks_csv(
+    status: Optional[str] = None,
+    repository: Optional[str] = None,
+    from_: Optional[float] = Query(None, alias="from"),
+    to: Optional[float] = None,
+    _: None = Depends(require_dashboard_token),
+):
+    tasks = store.query_tasks(
+        status=status, repository=repository, time_from=from_, time_to=to
+    )
+
+    def stream() -> Iterator[str]:
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(CSV_EXPORT_HEADERS)
+        yield buffer.getvalue()
+        buffer.seek(0)
+        buffer.truncate(0)
+        for task_id, task in tasks:
+            writer.writerow(csv_row_for_task(task_id, task))
+            yield buffer.getvalue()
+            buffer.seek(0)
+            buffer.truncate(0)
+
+    headers = {"Content-Disposition": 'attachment; filename="tasks.csv"'}
+    return StreamingResponse(stream(), media_type="text/csv", headers=headers)
 
 
 @app.get("/healthz")

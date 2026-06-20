@@ -1,6 +1,10 @@
 .env
+.venv/
 pycache/
+__pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
 tasks.json
 tasks.json.imported
 asoc.db
