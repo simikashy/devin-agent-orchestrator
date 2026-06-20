@@ -40,6 +40,7 @@
             <option value="all">All statuses</option>
             <option value="queued">Queued</option>
             <option value="running">Running</option>
+            <option value="PR">PR</option>
             <option value="completed">Completed</option>
             <option value="failed">Failed</option>
             <option value="cancelled">Cancelled</option>
@@ -78,7 +79,7 @@
     </section>
 
     <div id="view-operations">
-      <section id="summary" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-10"></section>
+      <section id="summary" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-10"></section>
 
       <section class="mb-10">
         <h2 class="text-lg font-medium mb-3">Active Sessions</h2>
@@ -223,13 +224,14 @@
   <script>
     const DASHBOARD_TOKEN = __ASOC_DASHBOARD_TOKEN__;
     const API_TOKEN = __ASOC_API_TOKEN__;
-    const ACTIVE_STATUSES = ["queued", "running"];
+    const ACTIVE_STATUSES = ["queued", "running", "PR"];
     const RESOLVED_STATUSES = ["completed", "failed", "cancelled"];
     const PAGE_SIZE = 200;
 
     const STATUS_STYLES = {
       queued: "bg-amber-500/20 text-amber-300",
       running: "bg-blue-500/20 text-blue-300",
+      PR: "bg-indigo-500/20 text-indigo-300",
       completed: "bg-emerald-500/20 text-emerald-300",
       failed: "bg-rose-500/20 text-rose-300",
       cancelled: "bg-slate-600/40 text-slate-300",
@@ -359,7 +361,7 @@
     }
 
     function computeSummary(rows) {
-      const summary = { total: rows.length, queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 };
+      const summary = { total: rows.length, queued: 0, running: 0, PR: 0, completed: 0, failed: 0, cancelled: 0 };
       rows.forEach((row) => {
         if (summary[row.status] !== undefined) summary[row.status] += 1;
       });
@@ -376,6 +378,7 @@
         summaryCard("Total", summary.total, "text-slate-100"),
         summaryCard("Queued", summary.queued, "text-amber-300"),
         summaryCard("Running", summary.running, "text-blue-300"),
+        summaryCard("PR", summary.PR, "text-indigo-300"),
         summaryCard("Completed", summary.completed, "text-emerald-300"),
         summaryCard("Failed", summary.failed, "text-rose-300"),
         summaryCard("Cancelled", summary.cancelled, "text-slate-300"),
@@ -468,10 +471,25 @@
       return `<td class="px-4 py-3">${label} ${title}</td>`;
     }
 
+    function sessionLink(row) {
+      if (!row.session_id) return "";
+      const href = `https://app.devin.ai/sessions/${encodeURIComponent(row.session_id)}`;
+      return `<a href="${href}" target="_blank" rel="noopener" class="font-mono text-xs text-indigo-300 hover:underline">${escapeHtml(row.session_id)}</a>`;
+    }
+
+    function activeSessionCell(row) {
+      if (row.status === "PR" && row.pr_url) {
+        const prHref = escapeHtml(row.pr_url);
+        const session = sessionLink(row);
+        const pr = `<a href="${prHref}" target="_blank" rel="noopener" class="text-indigo-300 hover:underline text-xs">View Pull Request</a>`;
+        return `<td class="px-4 py-3"><div class="flex flex-col gap-1">${session}${pr}</div></td>`;
+      }
+      return sessionCell(row);
+    }
+
     function sessionCell(row) {
       if (!row.session_id) return `<td class="px-4 py-3 text-slate-500">&mdash;</td>`;
-      const href = `https://app.devin.ai/sessions/${encodeURIComponent(row.session_id)}`;
-      return `<td class="px-4 py-3"><a href="${href}" target="_blank" rel="noopener" class="font-mono text-xs text-indigo-300 hover:underline">${escapeHtml(row.session_id)}</a></td>`;
+      return `<td class="px-4 py-3">${sessionLink(row)}</td>`;
     }
 
     function actionButton(action, taskId, classes, label) {
@@ -495,7 +513,7 @@
       if (key === "issue_id") return issueCell(row);
       if (key === "repository") return `<td class="px-4 py-3 text-slate-300">${row.repository ? escapeHtml(row.repository) : "&mdash;"}</td>`;
       if (key === "status") return `<td class="px-4 py-3">${statusBadge(row.status)}</td>`;
-      if (key === "session_id") return sessionCell(row);
+      if (key === "session_id") return activeSessionCell(row);
       if (key === "created_at") return `<td class="px-4 py-3 text-slate-400">${formatTimestamp(row.created_at)}</td>`;
       if (key === "actions") return actionsCell(row);
       return "<td class=\"px-4 py-3\"></td>";
