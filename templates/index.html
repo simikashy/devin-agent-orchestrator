@@ -82,6 +82,7 @@
   </div>
 
   <script>
+    const DASHBOARD_TOKEN = __ASOC_DASHBOARD_TOKEN__;
     const ACTIVE_STATUSES = ["queued", "running"];
     const RESOLVED_STATUSES = ["completed", "failed"];
 
@@ -512,7 +513,8 @@
 
     async function refresh() {
       try {
-        const response = await fetch("/metrics");
+        const headers = DASHBOARD_TOKEN ? { Authorization: "Bearer " + DASHBOARD_TOKEN } : {};
+        const response = await fetch("/metrics", { headers });
         if (!response.ok) return;
         const data = await response.json();
         latestTasks = data.tasks || {};

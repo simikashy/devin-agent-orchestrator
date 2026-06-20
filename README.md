@@ -10,7 +10,8 @@ ASOC is a FastAPI service that sits between your GitHub repositories and the Dev
 - Autonomous: each job spins up a Devin session with a structured remediation prompt.
 - Closed-loop: the orchestrator tracks each session to completion, then reports the outcome back on the issue.
 - Observable: a built-in dashboard surfaces active sessions, resolved issues, MTTR, and categorized failure reasons.
-- Durable: job history is persisted to local storage and reloaded on startup.
+- Durable: job history is persisted to local storage and reloaded on startup, and in-flight sessions are resumed automatically after a restart.
+- Secure by configuration: GitHub webhooks can be cryptographically verified, and the trigger and metrics endpoints can require bearer-token authentication.
 
 ## Why ASOC
 
@@ -74,9 +75,15 @@ Accepts a JSON body describing the issue to remediate:
 
 Returns an accepted status with the generated `task_id`. The remediation runs in the background.
 
+Returns `{"status": "duplicate", "task_id": <existing>}` instead of starting a second session when an in-flight job (`queued` or `running`) already exists for the same `repository` and `issue_id`.
+
+When `ASOC_API_TOKEN` is set, the request must include an `Authorization: Bearer <ASOC_API_TOKEN>` header or it is rejected with `401`.
+
 ### `POST /webhooks/github`
 
-Consumes GitHub `issues` webhook events. When the action is `labeled` and the label is `trigger-devin`, the orchestrator builds a remediation request from the issue payload and enqueues it automatically.
+Consumes GitHub `issues` webhook events. When the action is `labeled` and the label is `trigger-devin`, the orchestrator builds a remediation request from the issue payload and enqueues it automatically. Like `/remediate`, it de-duplicates in-flight jobs for the same `repository` and `issue_id`.
+
+When `GITHUB_WEBHOOK_SECRET` is set, every request is verified against its `X-Hub-Signature-256` header before processing (see [Security](#security)).
 
 ## Observability
 
@@ -133,6 +140,30 @@ GITHUB_TOKEN=your_github_token
 | -------- | ------- |
 | `DEVIN_API_KEY` | Authenticates requests to the Devin API when creating remediation sessions. |
 | `GITHUB_TOKEN` | Authorizes the orchestrator to post status comments back on GitHub issues. |
+| `GITHUB_WEBHOOK_SECRET` | Optional. Shared secret used to verify the `X-Hub-Signature-256` header on `POST /webhooks/github`. When set, unsigned or invalid requests are rejected with `401`. When unset, verification is skipped and a warning is logged (preserving current behavior). |
+| `ASOC_API_TOKEN` | Optional. When set, `POST /remediate` requires `Authorization: Bearer <ASOC_API_TOKEN>`. When unset, the endpoint is open and a startup warning is logged. |
+| `ASOC_DASHBOARD_TOKEN` | Optional. When set, `GET /metrics` requires `Authorization: Bearer <ASOC_DASHBOARD_TOKEN>`, and the dashboard page is rendered with the token injected so its polling requests stay authenticated. When unset, `/metrics` is open and the dashboard behaves exactly as before. |
+
+All new variables default to unset, which preserves the original unauthenticated behavior.
+
+## Security
+
+### GitHub webhook signature verification
+
+Set `GITHUB_WEBHOOK_SECRET` to the same value configured as the secret on the GitHub webhook. The orchestrator reads the raw request body, computes `HMAC-SHA256` over it with the secret, and compares the result against the `X-Hub-Signature-256` header using a constant-time comparison. A missing or invalid signature is rejected with `401` and no job is enqueued. When the variable is unset, verification is skipped and a warning is logged so existing deployments keep working.
+
+### Endpoint authentication
+
+`POST /remediate` and `GET /metrics` each support an optional bearer token, configured independently via `ASOC_API_TOKEN` and `ASOC_DASHBOARD_TOKEN`. When a token is set, requests must send `Authorization: Bearer <token>`; otherwise they are rejected with `401`. When the dashboard token is set, the dashboard served at `/` is rendered with the token injected so its automatic `GET /metrics` polling remains authenticated without any manual step. Both endpoints stay open when their token is unset, and the absence of a token is logged as a warning at startup.
+
+### Restart recovery
+
+Task history is reloaded on startup. Any task left in a non-terminal state (`queued` or `running`) is reconciled:
+
+- If it has a `session_id`, the orchestrator resumes polling that Devin session in the background until it reaches a terminal state, so a restart never strands an in-flight remediation.
+- If it has no `session_id` (it was recorded but the Devin session never started), it is marked `failed` with the `configuration` category and a clear reason, since there is no session to resume.
+
+Recovery runs in background threads and does not block startup.
 
 ### Start the server
 
@@ -172,7 +203,28 @@ curl -X POST http://localhost:8000/webhooks/github \
   }'
 ```
 
-Either call returns an accepted response with a `task_id`, and the new job appears on the dashboard. Without a valid `DEVIN_API_KEY`, the task is recorded and then marked `failed` with a `configuration` reason, which is the expected behavior when credentials are absent.
+Either call returns an accepted response with a `task_id`, and the new job appears on the dashboard. Re-triggering the same `repository` and `issue_id` while a job is still in flight returns `{"status": "duplicate", "task_id": <existing>}` instead of starting a second session. Without a valid `DEVIN_API_KEY`, the task is recorded and then marked `failed` with a `configuration` reason, which is the expected behavior when credentials are absent.
+
+When `ASOC_API_TOKEN` is set, pass it as a bearer token on `/remediate`:
+
+```bash
+curl -X POST http://localhost:8000/remediate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ASOC_API_TOKEN" \
+  -d '{ "issue_id": "101", "title": "Fix SQL injection in login handler", "description": "User input is concatenated directly into the query.", "repository": "your-org/your-repo", "branch": "main" }'
+```
+
+When `GITHUB_WEBHOOK_SECRET` is set, sign the raw body and send the digest in `X-Hub-Signature-256`:
+
+```bash
+BODY='{"action":"labeled","label":{"name":"trigger-devin"},"issue":{"number":101,"title":"Fix SQL injection in login handler","body":"User input is concatenated directly into the query."},"repository":{"full_name":"your-org/your-repo"}}'
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" | sed 's/^.* //')"
+curl -X POST http://localhost:8000/webhooks/github \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Event: issues" \
+  -H "X-Hub-Signature-256: $SIG" \
+  -d "$BODY"
+```
 
 ## Deployment with Docker
 
