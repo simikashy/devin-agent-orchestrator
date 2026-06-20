@@ -7,6 +7,10 @@ class FakeResponse:
         self.status_code = status_code
         self._payload = payload or {}
 
+    @property
+    def ok(self):
+        return self.status_code < 400
+
     def json(self):
         return self._payload
 
@@ -45,6 +49,32 @@ def test_run_remediation_success(store, monkeypatch):
     assert updated["status"] == "completed"
     assert updated["pr_url"] == "https://example/pr/9"
     assert comments
+
+
+def test_run_remediation_success_with_200_status(store, monkeypatch):
+    store.insert_task("task_200", make_task(status="queued"))
+    monkeypatch.setattr(main, "post_issue_comment", lambda *a, **k: None)
+    monkeypatch.setattr(main, "create_devin_session", lambda p: FakeResponse(200, {"session_id": "sess_200"}))
+    monkeypatch.setattr(
+        main,
+        "get_devin_session",
+        lambda sid: FakeResponse(
+            200,
+            {
+                "status_enum": "finished",
+                "structured_output": {"result": "success"},
+                "pull_request": {"url": "https://example/pr/200"},
+            },
+        ),
+    )
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
+
+    main.run_devin_remediation("task_200", payload())
+
+    updated = store.get_task("task_200")
+    assert updated["status"] == "completed"
+    assert updated["session_id"] == "sess_200"
+    assert updated["pr_url"] == "https://example/pr/200"
 
 
 def test_run_remediation_session_reported_failure(store, monkeypatch):
