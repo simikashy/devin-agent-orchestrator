@@ -5,14 +5,29 @@ load_dotenv()
 import json
 import time
 import uuid
+import hmac
+import hashlib
+import logging
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Dict, Optional
-from fastapi import FastAPI, BackgroundTasks, Header
-from fastapi.responses import FileResponse
+from typing import Dict, Optional, Tuple
+from fastapi import FastAPI, BackgroundTasks, Header, Request, HTTPException, Depends
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import requests
 
-app = FastAPI(title="Devin Automation Orchestrator")
+logger = logging.getLogger("asoc")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log_startup_warnings()
+    recover_in_flight_tasks()
+    yield
+
+
+app = FastAPI(title="Devin Automation Orchestrator", lifespan=lifespan)
 
 DEVIN_API_URL = "https://api.devin.ai/v1"
 GITHUB_API_URL = "https://api.github.com"
@@ -31,8 +46,13 @@ TRIGGER_LABEL = "trigger-devin"
 TERMINAL_SUCCESS_STATES = {"finished"}
 TERMINAL_FAILURE_STATES = {"expired", "blocked"}
 VALID_FAILURE_CATEGORIES = {"code_bug", "test_failure", "configuration"}
+NON_TERMINAL_STATES = {"queued", "running"}
 
 SESSION_START_COMMENT = "Autonomous remediation initiated by ASOC pipeline."
+DASHBOARD_TOKEN_PLACEHOLDER = "__ASOC_DASHBOARD_TOKEN__"
+RESTART_RECOVERY_FAILURE_REASON = (
+    "Task was queued or running without an active Devin session when the orchestrator restarted."
+)
 
 
 def load_tasks() -> Dict[str, dict]:
@@ -61,7 +81,7 @@ class RemediationRequest(BaseModel):
     title: str
     description: str
     repository: str
-    branch: str = "master"
+    branch: str = "main"
 
 
 def devin_headers() -> Dict[str, str]:
@@ -70,6 +90,46 @@ def devin_headers() -> Dict[str, str]:
         "Authorization": f"Bearer {clean_key}",
         "Content-Type": "application/json",
     }
+
+
+def get_api_token() -> str:
+    return os.getenv("ASOC_API_TOKEN", "").strip()
+
+
+def get_dashboard_token() -> str:
+    return os.getenv("ASOC_DASHBOARD_TOKEN", "").strip()
+
+
+def get_webhook_secret() -> str:
+    return os.getenv("GITHUB_WEBHOOK_SECRET", "").strip()
+
+
+def verify_bearer_token(expected: str, authorization: Optional[str]) -> None:
+    if not expected:
+        return
+    provided = ""
+    if authorization:
+        scheme, _, credentials = authorization.partition(" ")
+        if scheme.lower() == "bearer":
+            provided = credentials.strip()
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Invalid or missing bearer token.")
+
+
+async def require_api_token(authorization: Optional[str] = Header(None)) -> None:
+    verify_bearer_token(get_api_token(), authorization)
+
+
+async def require_dashboard_token(authorization: Optional[str] = Header(None)) -> None:
+    verify_bearer_token(get_dashboard_token(), authorization)
+
+
+def verify_github_signature(secret: str, body: bytes, signature_header: Optional[str]) -> bool:
+    if not signature_header:
+        return False
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    expected = f"sha256={digest}"
+    return hmac.compare_digest(expected, signature_header)
 
 
 def post_issue_comment(repository: str, issue_id: str, body: str) -> None:
@@ -273,7 +333,57 @@ def run_devin_remediation(task_id: str, payload: RemediationRequest) -> None:
         poll_session(task_id, payload, session_id)
 
 
-def enqueue_task(payload: RemediationRequest, background_tasks: BackgroundTasks) -> str:
+def remediation_request_from_task(task: dict) -> RemediationRequest:
+    return RemediationRequest(
+        issue_id=str(task.get("issue_id", "")),
+        title=task.get("title", "") or "",
+        description=task.get("description", "") or "",
+        repository=task.get("repository", "") or "",
+        branch=task.get("branch", "main") or "main",
+    )
+
+
+def find_in_flight_task(repository: str, issue_id: str) -> Optional[str]:
+    for task_id, task in task_store.items():
+        if task.get("status") not in NON_TERMINAL_STATES:
+            continue
+        if task.get("repository") == repository and str(task.get("issue_id")) == str(issue_id):
+            return task_id
+    return None
+
+
+def recover_in_flight_tasks() -> None:
+    for task_id, task in list(task_store.items()):
+        if task.get("status") not in NON_TERMINAL_STATES:
+            continue
+        session_id = task.get("session_id")
+        if session_id:
+            payload = remediation_request_from_task(task)
+            update_task(task_id, status="running")
+            thread = threading.Thread(
+                target=poll_session,
+                args=(task_id, payload, session_id),
+                daemon=True,
+            )
+            thread.start()
+        else:
+            mark_task_failed(task_id, RESTART_RECOVERY_FAILURE_REASON, "configuration")
+
+
+def log_startup_warnings() -> None:
+    if not get_api_token():
+        logger.warning("ASOC_API_TOKEN is not set; POST /remediate is unauthenticated.")
+    if not get_webhook_secret():
+        logger.warning("GITHUB_WEBHOOK_SECRET is not set; GitHub webhook signatures are not verified.")
+    if not get_dashboard_token():
+        logger.warning("ASOC_DASHBOARD_TOKEN is not set; GET /metrics is unauthenticated.")
+
+
+def enqueue_task(payload: RemediationRequest, background_tasks: BackgroundTasks) -> Tuple[str, bool]:
+    existing = find_in_flight_task(payload.repository, payload.issue_id)
+    if existing:
+        return existing, True
+
     task_id = f"task_{int(time.time())}_{uuid.uuid4().hex[:8]}"
     now = time.time()
     task_store[task_id] = {
@@ -292,22 +402,51 @@ def enqueue_task(payload: RemediationRequest, background_tasks: BackgroundTasks)
     }
     save_tasks(task_store)
     background_tasks.add_task(run_devin_remediation, task_id, payload)
-    return task_id
+    return task_id, False
 
 
-@app.get("/")
-async def dashboard():
-    return FileResponse(TEMPLATES_DIR / "index.html")
+@app.get("/", response_class=HTMLResponse)
+async def dashboard() -> HTMLResponse:
+    template = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
+    rendered = template.replace(DASHBOARD_TOKEN_PLACEHOLDER, json.dumps(get_dashboard_token()))
+    return HTMLResponse(content=rendered)
 
 
 @app.post("/remediate")
-async def trigger_remediation(payload: RemediationRequest, background_tasks: BackgroundTasks):
-    task_id = enqueue_task(payload, background_tasks)
+async def trigger_remediation(
+    payload: RemediationRequest,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(require_api_token),
+):
+    task_id, duplicate = enqueue_task(payload, background_tasks)
+    if duplicate:
+        return {"status": "duplicate", "task_id": task_id}
     return {"status": "accepted", "task_id": task_id}
 
 
 @app.post("/webhooks/github")
-async def github_webhook(payload: dict, background_tasks: BackgroundTasks, x_github_event: Optional[str] = Header(None)):
+async def github_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_github_event: Optional[str] = Header(None),
+    x_hub_signature_256: Optional[str] = Header(None),
+):
+    raw_body = await request.body()
+    secret = get_webhook_secret()
+    if secret:
+        if not verify_github_signature(secret, raw_body, x_hub_signature_256):
+            raise HTTPException(status_code=401, detail="Invalid GitHub webhook signature.")
+    else:
+        logger.warning("GITHUB_WEBHOOK_SECRET is not set; skipping webhook signature verification.")
+
+    try:
+        payload = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
     if x_github_event != "issues":
         return {"status": "ignored"}
 
@@ -326,12 +465,14 @@ async def github_webhook(payload: dict, background_tasks: BackgroundTasks, x_git
         description=issue.get("body", ""),
         repository=repo.get("full_name"),
     )
-    task_id = enqueue_task(request_payload, background_tasks)
+    task_id, duplicate = enqueue_task(request_payload, background_tasks)
+    if duplicate:
+        return {"status": "duplicate", "task_id": task_id}
     return {"status": "webhook_processed", "task_id": task_id}
 
 
 @app.get("/metrics")
-async def get_metrics():
+async def get_metrics(_: None = Depends(require_dashboard_token)):
     total_tasks = len(task_store)
     completed = sum(1 for t in task_store.values() if t["status"] == "completed")
     failed = sum(1 for t in task_store.values() if t["status"] == "failed")
