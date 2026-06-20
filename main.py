@@ -78,6 +78,7 @@ TASK_LOG_FIELDS = ("task_id", "issue_id", "repository", "status", "failure_categ
 
 SESSION_START_COMMENT = "Autonomous remediation initiated by ASOC pipeline."
 DASHBOARD_TOKEN_PLACEHOLDER = "__ASOC_DASHBOARD_TOKEN__"
+API_TOKEN_PLACEHOLDER = "__ASOC_API_TOKEN__"
 RESTART_RECOVERY_FAILURE_REASON = (
     "Task was queued or running without an active Devin session when the orchestrator restarted."
 )
@@ -121,6 +122,24 @@ def log_task_transition(task_id: str, task: dict) -> None:
 
 
 store = TaskStore(DB_FILE)
+
+cancel_lock = threading.Lock()
+cancelled_task_ids: set = set()
+
+
+def request_cancel(task_id: str) -> None:
+    with cancel_lock:
+        cancelled_task_ids.add(task_id)
+
+
+def is_cancel_requested(task_id: str) -> bool:
+    with cancel_lock:
+        return task_id in cancelled_task_ids
+
+
+def clear_cancel(task_id: str) -> None:
+    with cancel_lock:
+        cancelled_task_ids.discard(task_id)
 
 
 class RemediationRequest(BaseModel):
@@ -357,6 +376,9 @@ def finalize_from_session(task_id: str, payload: RemediationRequest, data: dict)
 
 def poll_session(task_id: str, payload: RemediationRequest, session_id: str) -> None:
     for _ in range(SESSION_POLL_MAX_ATTEMPTS):
+        if is_cancel_requested(task_id):
+            clear_cancel(task_id)
+            return
         time.sleep(SESSION_POLL_INTERVAL_SECONDS)
         try:
             response = get_devin_session(session_id)
@@ -369,8 +391,15 @@ def poll_session(task_id: str, payload: RemediationRequest, session_id: str) -> 
         data = response.json()
         status_enum = data.get("status_enum")
         if status_enum in TERMINAL_SUCCESS_STATES or status_enum in TERMINAL_FAILURE_STATES:
+            if is_cancel_requested(task_id):
+                clear_cancel(task_id)
+                return
             finalize_from_session(task_id, payload, data)
             return
+
+    if is_cancel_requested(task_id):
+        clear_cancel(task_id)
+        return
 
     finalize_failure(
         task_id,
@@ -381,6 +410,9 @@ def poll_session(task_id: str, payload: RemediationRequest, session_id: str) -> 
 
 
 def run_devin_remediation(task_id: str, payload: RemediationRequest) -> None:
+    if is_cancel_requested(task_id):
+        clear_cancel(task_id)
+        return
     try:
         response = call_with_retries(lambda: create_devin_session(payload), "Devin session creation")
     except requests.Timeout:
@@ -530,6 +562,7 @@ def enqueue_task(payload: RemediationRequest) -> Tuple[str, bool]:
 async def dashboard() -> HTMLResponse:
     template = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
     rendered = template.replace(DASHBOARD_TOKEN_PLACEHOLDER, json.dumps(get_dashboard_token()))
+    rendered = rendered.replace(API_TOKEN_PLACEHOLDER, json.dumps(get_api_token()))
     return HTMLResponse(content=rendered)
 
 
@@ -542,6 +575,40 @@ async def trigger_remediation(
     if duplicate:
         return {"status": "duplicate", "task_id": task_id}
     return {"status": "accepted", "task_id": task_id}
+
+
+def require_task(task_id: str) -> dict:
+    task = store.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    return task
+
+
+@app.post("/tasks/{task_id}/retry")
+async def retry_task(task_id: str, _: None = Depends(require_api_token)):
+    task = require_task(task_id)
+    if task.get("status") != "failed":
+        raise HTTPException(status_code=409, detail="Only failed tasks can be retried.")
+    payload = remediation_request_from_task(task)
+    new_task_id, duplicate = enqueue_task(payload)
+    status = "duplicate" if duplicate else "accepted"
+    return {"status": status, "task_id": new_task_id, "source_task_id": task_id}
+
+
+@app.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str, _: None = Depends(require_api_token)):
+    task = require_task(task_id)
+    if task.get("status") not in NON_TERMINAL_STATES:
+        raise HTTPException(status_code=409, detail="Only queued or running tasks can be cancelled.")
+    request_cancel(task_id)
+    update_task(
+        task_id,
+        status="cancelled",
+        error=None,
+        failure_reason=None,
+        failure_category=None,
+    )
+    return {"status": "cancelled", "task_id": task_id}
 
 
 @app.post("/webhooks/github")
@@ -607,6 +674,7 @@ def build_summary(tasks: List[Tuple[str, dict]]) -> Dict[str, object]:
         "running": statuses.count("running"),
         "completed": statuses.count("completed"),
         "failed": statuses.count("failed"),
+        "cancelled": statuses.count("cancelled"),
         "mean_time_to_resolution_seconds": mean_duration(tasks, "completed"),
         "mean_time_to_failure_seconds": mean_duration(tasks, "failed"),
     }
