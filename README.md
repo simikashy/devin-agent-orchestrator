@@ -38,12 +38,13 @@ GitHub Webhook  ->  FastAPI Orchestrator  ->  Devin API
 2. The FastAPI orchestrator validates the event, records a task, and enqueues a background job.
 3. The background job creates a Devin session with a structured prompt and updates the task status to `running`.
 4. On session start, the orchestrator comments back on the issue to confirm remediation has begun.
-5. The orchestrator polls the Devin session until it reaches a terminal state, then records the result, the Pull Request URL, and any categorized failure reason.
-6. On completion or failure, the orchestrator posts a final comment on the issue with the Pull Request link or the failure reason.
+5. The orchestrator polls the Devin session until it stops. When the session opens a Pull Request and pauses for review, the task moves to the `PR` status and a background poller watches the Pull Request on GitHub.
+6. When the Pull Request is merged, the task is marked `completed` and the linked GitHub issue is closed automatically; if the Pull Request is closed without merging, the task is marked `failed`.
+7. On completion or failure, the orchestrator posts a final comment on the issue with the Pull Request link or the failure reason.
 
 ### Task lifecycle
 
-Each task is persisted with `issue_id`, `status`, `session_id`, `pr_url`, `failure_category`, `failure_reason`, `created_at`, `updated_at`, and `error`. Status transitions are `queued -> running -> completed` or `queued -> running -> failed`. A `queued` or `running` task can also be moved to the terminal `cancelled` state via `POST /tasks/{task_id}/cancel`; cancellation is treated as resolved/terminal and rendered with a distinct badge.
+Each task is persisted with `issue_id`, `status`, `session_id`, `pr_url`, `failure_category`, `failure_reason`, `created_at`, `updated_at`, and `error`. The status flows through `queued -> running -> PR -> completed`, where `PR` is an active state entered once the session opens a Pull Request and held until that Pull Request is merged. A task that never produces a Pull Request, or whose Pull Request is closed unmerged, transitions to `failed`. A `queued`, `running`, or `PR` task can also be moved to the terminal `cancelled` state via `POST /tasks/{task_id}/cancel`; cancellation is treated as resolved/terminal and rendered with a distinct badge. The agent's prompt instructs it to include a `Closes #<issue>` keyword so the originating issue is linked to the Pull Request and resolved on merge.
 
 ### Autonomous workflow contract
 
@@ -59,10 +60,10 @@ Every Devin session is dispatched with a prompt that enforces a closed-loop patt
 | ------ | ---- | -------- |
 | `POST` | `/remediate` | Manually enqueues a remediation job from a JSON payload and starts a Devin session in the background. |
 | `POST` | `/tasks/{task_id}/retry` | Re-enqueues a `failed` task as a brand-new remediation, reusing the original issue details and respecting the concurrency cap and in-flight de-duplication. |
-| `POST` | `/tasks/{task_id}/cancel` | Marks a `queued` or `running` task as `cancelled` (a terminal state) and stops its polling loop. |
+| `POST` | `/tasks/{task_id}/cancel` | Marks a `queued`, `running`, or `PR` task as `cancelled` (a terminal state) and stops its polling loop. |
 | `DELETE` | `/tasks/{task_id}` | Permanently removes a task's record so it disappears from every table, chart, KPI, leaderboard, and the CSV export. |
 | `POST` | `/webhooks/github` | Receives GitHub issue events; when an issue is labeled `trigger-devin`, enqueues a remediation job automatically. |
-| `GET` | `/metrics` | Returns server-side summary aggregates (queued, running, completed, failed, cancelled, MTTR/MTTF) and a filterable, paginated page of tasks. |
+| `GET` | `/metrics` | Returns server-side summary aggregates (queued, running, pr, completed, failed, cancelled, MTTR/MTTF) and a filterable, paginated page of tasks. |
 | `GET` | `/export/tasks.csv` | Streams the matching tasks (same filters as `/metrics`) as a downloadable CSV file. |
 | `GET` | `/healthz` | Liveness/readiness probe; returns `{"status": "ok"}` after a lightweight database connectivity check. |
 | `GET` | `/` | Serves the observability dashboard. |

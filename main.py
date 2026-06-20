@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
+from urllib.parse import urlparse
 from fastapi import FastAPI, Header, Request, HTTPException, Depends, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -70,6 +71,8 @@ CSV_EXPORT_HEADERS = (
 DEVIN_REQUEST_TIMEOUT = 30
 SESSION_POLL_INTERVAL_SECONDS = 15
 SESSION_POLL_MAX_ATTEMPTS = 240
+PR_POLL_INTERVAL_SECONDS = 60
+PR_POLL_MAX_ATTEMPTS = 2880
 
 RETRY_MAX_ATTEMPTS = 4
 RETRY_BASE_DELAY_SECONDS = 1.0
@@ -81,10 +84,13 @@ METRICS_DEFAULT_PAGE_SIZE = 50
 METRICS_MAX_PAGE_SIZE = 200
 
 TRIGGER_LABEL = "trigger-devin"
+PR_STATUS = "PR"
+SESSION_BLOCKED_STATE = "blocked"
 TERMINAL_SUCCESS_STATES = {"finished"}
-TERMINAL_FAILURE_STATES = {"expired", "blocked"}
+TERMINAL_FAILURE_STATES = {"expired"}
+SESSION_POLL_TERMINAL_STATES = TERMINAL_SUCCESS_STATES | TERMINAL_FAILURE_STATES | {SESSION_BLOCKED_STATE}
 VALID_FAILURE_CATEGORIES = {"code_bug", "test_failure", "configuration"}
-NON_TERMINAL_STATES = {"queued", "running"}
+NON_TERMINAL_STATES = {"queued", "running", PR_STATUS}
 
 LOG_LEVELS = {
     "CRITICAL": logging.CRITICAL,
@@ -243,25 +249,66 @@ def call_with_retries(operation: Callable[[], requests.Response], context: str) 
         return response
 
 
+def github_headers() -> Dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def post_issue_comment(repository: str, issue_id: str, body: str) -> None:
     token = os.getenv("GITHUB_TOKEN", "").strip()
     if not token or not repository or not issue_id:
         return
 
     url = f"{GITHUB_API_URL}/repos/{repository}/issues/{issue_id}/comments"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
 
     try:
         call_with_retries(
-            lambda: requests.post(url, json={"body": body}, headers=headers, timeout=DEVIN_REQUEST_TIMEOUT),
+            lambda: requests.post(url, json={"body": body}, headers=github_headers(), timeout=DEVIN_REQUEST_TIMEOUT),
             "GitHub issue comment",
         )
     except requests.RequestException:
         return
+
+
+def close_github_issue(repository: str, issue_id: str) -> None:
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if not token or not repository or not str(issue_id).isdigit():
+        return
+
+    url = f"{GITHUB_API_URL}/repos/{repository}/issues/{issue_id}"
+
+    try:
+        call_with_retries(
+            lambda: requests.patch(
+                url,
+                json={"state": "closed", "state_reason": "completed"},
+                headers=github_headers(),
+                timeout=DEVIN_REQUEST_TIMEOUT,
+            ),
+            "GitHub issue close",
+        )
+    except requests.RequestException:
+        return
+
+
+def parse_github_pr_url(pr_url: str) -> Optional[Tuple[str, str, str]]:
+    if not isinstance(pr_url, str):
+        return None
+    segments = [segment for segment in urlparse(pr_url).path.split("/") if segment]
+    if len(segments) >= 4 and segments[2] == "pull" and segments[3].isdigit():
+        return segments[0], segments[1], segments[3]
+    return None
+
+
+def get_github_pull_request(owner: str, repo: str, pr_number: str) -> requests.Response:
+    url = f"{GITHUB_API_URL}/repos/{owner}/{repo}/pulls/{pr_number}"
+    return requests.get(url, headers=github_headers(), timeout=DEVIN_REQUEST_TIMEOUT)
 
 
 def build_remediation_prompt(payload: RemediationRequest) -> str:
@@ -288,7 +335,7 @@ def build_remediation_prompt(payload: RemediationRequest) -> str:
 
     Delivery Phase:
     7. Rebase onto the latest {payload.branch}, resolving any merge conflicts so existing behavior is preserved, then re-run the full Verification Phase.
-    8. Open a Pull Request back to {payload.branch} summarizing the root cause, the fix, and the verification you performed.
+    8. Open a Pull Request back to {payload.branch} summarizing the root cause, the fix, and the verification you performed. When this work corresponds to a tracked GitHub issue, include a closing keyword such as "Closes #{payload.issue_id}" in the Pull Request description so merging the Pull Request resolves that issue.
 
     Actionable Reporting:
     When you stop, set your session structured output to a JSON object with exactly these keys:
@@ -377,12 +424,109 @@ def finalize_failure(task_id: str, payload: RemediationRequest, reason: str, cat
     post_issue_comment(payload.repository, payload.issue_id, comment)
 
 
+def finalize_pr_merged(task_id: str, payload: RemediationRequest, pr_url: Optional[str]) -> None:
+    update_task(
+        task_id,
+        status="completed",
+        pr_url=pr_url,
+        failure_reason=None,
+        failure_category=None,
+        error=None,
+    )
+    close_github_issue(payload.repository, payload.issue_id)
+    comment = f"Autonomous remediation completed by ASOC pipeline. Merged Pull Request: {pr_url}"
+    post_issue_comment(payload.repository, payload.issue_id, comment)
+
+
+def poll_pr_for_merge(task_id: str, payload: RemediationRequest, pr_url: str) -> None:
+    parsed = parse_github_pr_url(pr_url)
+    if parsed is None:
+        finalize_failure(
+            task_id,
+            payload,
+            f"Could not parse the Pull Request URL '{pr_url}' to track its merge status.",
+            "configuration",
+        )
+        return
+    owner, repo, pr_number = parsed
+
+    for _ in range(PR_POLL_MAX_ATTEMPTS):
+        if is_cancel_requested(task_id):
+            clear_cancel(task_id)
+            return
+        try:
+            response = get_github_pull_request(owner, repo, pr_number)
+        except requests.RequestException:
+            time.sleep(PR_POLL_INTERVAL_SECONDS)
+            continue
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("merged"):
+                if is_cancel_requested(task_id):
+                    clear_cancel(task_id)
+                    return
+                finalize_pr_merged(task_id, payload, pr_url)
+                return
+            if data.get("state") == "closed":
+                if is_cancel_requested(task_id):
+                    clear_cancel(task_id)
+                    return
+                finalize_failure(
+                    task_id,
+                    payload,
+                    "The Pull Request was closed without being merged.",
+                    "configuration",
+                )
+                return
+
+        time.sleep(PR_POLL_INTERVAL_SECONDS)
+
+    if is_cancel_requested(task_id):
+        clear_cancel(task_id)
+        return
+
+    finalize_failure(
+        task_id,
+        payload,
+        "The Pull Request was not merged within the tracking window.",
+        "configuration",
+    )
+
+
+def start_pr_tracking_thread(task_id: str, payload: RemediationRequest, pr_url: str) -> None:
+    threading.Thread(
+        target=poll_pr_for_merge,
+        args=(task_id, payload, pr_url),
+        daemon=True,
+    ).start()
+
+
+def begin_pr_tracking(task_id: str, payload: RemediationRequest, pr_url: str) -> None:
+    update_task(
+        task_id,
+        status=PR_STATUS,
+        pr_url=pr_url,
+        failure_reason=None,
+        failure_category=None,
+        error=None,
+    )
+    comment = f"Autonomous remediation opened a Pull Request and is awaiting review and merge: {pr_url}"
+    post_issue_comment(payload.repository, payload.issue_id, comment)
+    start_pr_tracking_thread(task_id, payload, pr_url)
+
+
 def finalize_from_session(task_id: str, payload: RemediationRequest, data: dict) -> None:
     structured = extract_structured_output(data)
     pr_url = extract_pull_request_url(data, structured)
     status_enum = data.get("status_enum")
+    reported_failure = structured.get("result") == "failure"
 
-    if structured.get("result") == "failure" or status_enum in TERMINAL_FAILURE_STATES:
+    if not reported_failure and status_enum == SESSION_BLOCKED_STATE and pr_url:
+        begin_pr_tracking(task_id, payload, pr_url)
+        return
+
+    if reported_failure or status_enum in TERMINAL_FAILURE_STATES or status_enum == SESSION_BLOCKED_STATE:
         reason = structured.get("failure_reason")
         if not isinstance(reason, str) or not reason:
             reason = f"Session ended in state '{status_enum}' without a successful remediation."
@@ -409,7 +553,7 @@ def poll_session(task_id: str, payload: RemediationRequest, session_id: str) -> 
 
         data = response.json()
         status_enum = data.get("status_enum")
-        if status_enum in TERMINAL_SUCCESS_STATES or status_enum in TERMINAL_FAILURE_STATES:
+        if status_enum in SESSION_POLL_TERMINAL_STATES:
             if is_cancel_requested(task_id):
                 clear_cancel(task_id)
                 return
@@ -524,9 +668,12 @@ def recover_in_flight_tasks() -> None:
     for task_id, task in store.load_tasks().items():
         if task.get("status") not in NON_TERMINAL_STATES:
             continue
+        payload = remediation_request_from_task(task)
+        if task.get("status") == PR_STATUS and task.get("pr_url"):
+            start_pr_tracking_thread(task_id, payload, task["pr_url"])
+            continue
         session_id = task.get("session_id")
         if session_id:
-            payload = remediation_request_from_task(task)
             update_task(task_id, status="running")
             thread = threading.Thread(
                 target=poll_session,
@@ -618,7 +765,7 @@ async def retry_task(task_id: str, _: None = Depends(require_api_token)):
 async def cancel_task(task_id: str, _: None = Depends(require_api_token)):
     task = require_task(task_id)
     if task.get("status") not in NON_TERMINAL_STATES:
-        raise HTTPException(status_code=409, detail="Only queued or running tasks can be cancelled.")
+        raise HTTPException(status_code=409, detail="Only queued, running, or PR tasks can be cancelled.")
     request_cancel(task_id)
     update_task(
         task_id,
@@ -710,6 +857,7 @@ def build_summary(tasks: List[Tuple[str, dict]]) -> Dict[str, object]:
         "total_triggered_jobs": len(tasks),
         "queued": statuses.count("queued"),
         "running": statuses.count("running"),
+        "pr": statuses.count(PR_STATUS),
         "completed": statuses.count("completed"),
         "failed": statuses.count("failed"),
         "cancelled": statuses.count("cancelled"),
