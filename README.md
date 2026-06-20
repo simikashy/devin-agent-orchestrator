@@ -10,7 +10,9 @@ ASOC is a FastAPI service that sits between your GitHub repositories and the Dev
 - Autonomous: each job spins up a Devin session with a structured remediation prompt.
 - Closed-loop: the orchestrator tracks each session to completion, then reports the outcome back on the issue.
 - Observable: a built-in dashboard surfaces active sessions, resolved issues, MTTR, and categorized failure reasons.
-- Durable: job history is persisted to local storage and reloaded on startup, and in-flight sessions are resumed automatically after a restart.
+- Durable: job history is persisted to a local SQLite database and reloaded on startup, in-flight sessions are resumed automatically after a restart, and a pre-existing `tasks.json` is imported once so no history is lost.
+- Resilient: transient Devin and GitHub failures are retried with exponential backoff, and a configurable cap bounds the number of concurrent in-flight sessions.
+- Operable: every task state transition is emitted as structured JSON logging, and a health endpoint exposes database readiness.
 - Secure by configuration: GitHub webhooks can be cryptographically verified, and the trigger and metrics endpoints can require bearer-token authentication.
 
 ## Why ASOC
@@ -56,7 +58,8 @@ Every Devin session is dispatched with a prompt that enforces a closed-loop patt
 | ------ | ---- | -------- |
 | `POST` | `/remediate` | Manually enqueues a remediation job from a JSON payload and starts a Devin session in the background. |
 | `POST` | `/webhooks/github` | Receives GitHub issue events; when an issue is labeled `trigger-devin`, enqueues a remediation job automatically. |
-| `GET` | `/metrics` | Returns summary counts (queued, running, completed, failed), MTTR, and the full task store. |
+| `GET` | `/metrics` | Returns server-side summary aggregates (queued, running, completed, failed, MTTR/MTTF) and a filterable, paginated page of tasks. |
+| `GET` | `/healthz` | Liveness/readiness probe; returns `{"status": "ok"}` after a lightweight database connectivity check. |
 | `GET` | `/` | Serves the observability dashboard. |
 
 ### `POST /remediate`
@@ -95,6 +98,41 @@ A live dashboard is served at http://localhost:8000 and refreshes every 10 secon
 
 Both tables are sortable by clicking any column header.
 
+### Querying metrics
+
+`GET /metrics` is filterable and paginated. Every parameter is optional; with none supplied it returns the most recent page of tasks and aggregates computed over the entire store, matching the original behavior.
+
+| Parameter | Default | Description |
+| --------- | ------- | ----------- |
+| `status` | – | Only include tasks with this status (`queued`, `running`, `completed`, `failed`). |
+| `repository` | – | Only include tasks for this `owner/name` repository. |
+| `from` | – | Unix timestamp; only include tasks created at or after this time. |
+| `to` | – | Unix timestamp; only include tasks created at or before this time. |
+| `page` | `1` | 1-based page number. |
+| `page_size` | `50` | Tasks per page, capped at `200`. |
+
+The response stays backward compatible, adding pagination metadata alongside the existing `summary` and `tasks` keys:
+
+```json
+{
+  "summary": {
+    "total_triggered_jobs": 12,
+    "queued": 1,
+    "running": 2,
+    "completed": 7,
+    "failed": 2,
+    "mean_time_to_resolution_seconds": 134.5,
+    "mean_time_to_failure_seconds": 88.0
+  },
+  "tasks": { "task_...": { "...": "..." } },
+  "page": 1,
+  "page_size": 50,
+  "total": 12
+}
+```
+
+The `summary` aggregates are always computed server-side over the full filtered set, not just the returned page. `mean_time_to_resolution_seconds` now covers completed tasks only, and `mean_time_to_failure_seconds` covers failed tasks only.
+
 ### Failure handling
 
 When remediation does not succeed, the task is recorded with `status` `failed`, a `failure_category`, and a human-readable `failure_reason`. The orchestrator then posts a final comment on the issue in the form `Autonomous remediation failed in ASOC pipeline. Failure category: <category>. Reason: <reason>`, and the dashboard renders the category as a badge alongside the reason.
@@ -113,7 +151,7 @@ Failures originate in two places:
 
 ### Local persistence
 
-The orchestrator stores its task history in a `tasks.json` file in the project root. The store is written after every state change and reloaded automatically on startup, so dashboard metrics persist across server restarts. This file is local runtime state and is excluded from version control.
+The orchestrator stores its task history in a local SQLite database (`asoc.db`) in the project root, using Python's standard-library `sqlite3` with no extra infrastructure. Writes are serialized so concurrent background polling cannot corrupt the store. The database is reloaded automatically on startup, so dashboard metrics persist across server restarts. On first startup, a pre-existing `tasks.json` is imported once and then renamed to `tasks.json.imported`. The database file is local runtime state and is excluded from version control.
 
 ## How to Run
 
@@ -143,8 +181,10 @@ GITHUB_TOKEN=your_github_token
 | `GITHUB_WEBHOOK_SECRET` | Optional. Shared secret used to verify the `X-Hub-Signature-256` header on `POST /webhooks/github`. When set, unsigned or invalid requests are rejected with `401`. When unset, verification is skipped and a warning is logged (preserving current behavior). |
 | `ASOC_API_TOKEN` | Optional. When set, `POST /remediate` requires `Authorization: Bearer <ASOC_API_TOKEN>`. When unset, the endpoint is open and a startup warning is logged. |
 | `ASOC_DASHBOARD_TOKEN` | Optional. When set, `GET /metrics` requires `Authorization: Bearer <ASOC_DASHBOARD_TOKEN>`, and the dashboard page is rendered with the token injected so its polling requests stay authenticated. When unset, `/metrics` is open and the dashboard behaves exactly as before. |
+| `ASOC_MAX_CONCURRENT_SESSIONS` | Optional. Maximum number of Devin sessions allowed to run at once. Additional triggers are accepted, held as `queued`, and started as capacity frees up. Defaults to `3`. |
+| `LOG_LEVEL` | Optional. Logging verbosity, one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Defaults to `INFO`. |
 
-All new variables default to unset, which preserves the original unauthenticated behavior.
+The authentication and webhook variables default to unset, which preserves the original unauthenticated behavior.
 
 ## Security
 
@@ -164,6 +204,22 @@ Task history is reloaded on startup. Any task left in a non-terminal state (`que
 - If it has no `session_id` (it was recorded but the Devin session never started), it is marked `failed` with the `configuration` category and a clear reason, since there is no session to resume.
 
 Recovery runs in background threads and does not block startup.
+
+## Reliability and operations
+
+### Retries and concurrency
+
+Transient Devin API and GitHub failures — timeouts, connection errors, and HTTP `5xx` responses — are retried with bounded exponential backoff before a task is marked failed. Clear client errors (`401`, `403`, and other `4xx` responses) are never retried and remain immediate `configuration` failures.
+
+The number of simultaneously in-flight Devin sessions is capped by `ASOC_MAX_CONCURRENT_SESSIONS` (default 3). Triggers beyond the cap are accepted immediately, held as `queued`, and started automatically as capacity frees up.
+
+### Structured logging
+
+Each task state transition is emitted as a single JSON log line — including task id, issue, repository, status, and failure category — via Python `logging`. The verbosity is configurable with `LOG_LEVEL` (default `INFO`).
+
+### Health checks
+
+`GET /healthz` returns `{"status": "ok"}` after a lightweight database connectivity check, suitable for container or orchestrator readiness probes. It responds with `503` when the database is unreachable.
 
 ### Start the server
 
@@ -236,7 +292,7 @@ docker compose up --build
 
 This builds the image from `python:3.11-slim`, installs dependencies from `requirements.txt`, and starts the orchestrator on port 8000.
 
-Environment variables are loaded from a `.env` file in the project root (see [Configure environment variables](#configure-environment-variables) above). The `tasks.json` file is mounted as a volume so task history persists across container restarts.
+Environment variables are loaded from a `.env` file in the project root (see [Configure environment variables](#configure-environment-variables) above). The `asoc.db` SQLite database is mounted as a volume so task history persists across container restarts.
 
 To run in detached mode:
 

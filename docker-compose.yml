@@ -9,5 +9,5 @@ services:
       - DEVIN_API_KEY=${DEVIN_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
     volumes:
-      - ./tasks.json:/app/tasks.json
+      - ./asoc.db:/app/asoc.db
     restart: unless-stopped

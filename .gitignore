@@ -2,3 +2,7 @@
 pycache/
 *.pyc
 tasks.json
+tasks.json.imported
+asoc.db
+asoc.db-shm
+asoc.db-wal
