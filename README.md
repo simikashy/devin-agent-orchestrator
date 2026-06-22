@@ -255,6 +255,8 @@ GITHUB_TOKEN=your_github_token
 | `ASOC_DASHBOARD_TOKEN` | Optional. When set, `GET /metrics` requires `Authorization: Bearer <ASOC_DASHBOARD_TOKEN>`, and the dashboard page is rendered with the token injected so its polling requests stay authenticated. When unset, `/metrics` is open and the dashboard behaves exactly as before. |
 | `ASOC_MAX_CONCURRENT_SESSIONS` | Optional. Maximum number of Devin sessions allowed to run at once. Additional triggers are accepted, held as `queued`, and started as capacity frees up. Defaults to `3`. |
 | `ASOC_MAX_ACU_PER_SESSION` | Optional. Maximum ACU (AI Compute Units) budget for each Devin session. When set to a positive integer, the value is passed as `max_acu_limit` in the session creation request. When unset, the key is omitted and Devin applies its default limit. |
+| `ASOC_ACU_PERIOD_BUDGET` | Optional. Your subscription tier's ACU allowance per billing period. When set, the Analytics tab shows a budget utilization bar (consumed/budget with green→amber→red color shift). When unset, the bar is hidden and only raw ACU metrics are shown. |
+| `ASOC_ACU_PERIOD_DAYS` | Optional. Length of your billing period in days. Defaults to `30`. Used alongside `ASOC_ACU_PERIOD_BUDGET` for the utilization display. |
 | `LOG_LEVEL` | Optional. Logging verbosity, one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Defaults to `INFO`. |
 
 The authentication and webhook variables default to unset, which preserves the original unauthenticated behavior.

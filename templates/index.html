@@ -123,6 +123,21 @@
       </section>
 
       <section class="mb-10">
+        <h2 class="text-lg font-medium mb-3">Compute Usage</h2>
+        <div id="acu-kpis" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+        <div id="acu-budget-bar" class="mt-4 hidden">
+          <div class="flex justify-between text-xs text-slate-400 mb-1">
+            <span id="acu-budget-label"></span>
+            <span id="acu-budget-pct"></span>
+          </div>
+          <div class="w-full h-3 rounded-full bg-slate-800 overflow-hidden">
+            <div id="acu-budget-fill" class="h-full rounded-full transition-all duration-500"></div>
+          </div>
+          <p class="text-xs text-slate-500 mt-1" id="acu-budget-note"></p>
+        </div>
+      </section>
+
+      <section class="mb-10">
         <h2 class="text-lg font-medium mb-3">Repository Leaderboard</h2>
         <p class="text-xs text-slate-500 mb-2">Per-repository remediation breakdown across the current filtered view. Click a column header to sort.</p>
         <div class="overflow-x-auto rounded-lg border border-slate-800">
@@ -262,14 +277,15 @@
     ];
 
     const RESOLVED_COLUMNS = [
-      { key: "id", label: "Task ID", type: "text", width: "12%" },
-      { key: "issue_id", label: "Issue", type: "number", width: "17%" },
-      { key: "repository", label: "Repository", type: "text", width: "12%" },
+      { key: "id", label: "Task ID", type: "text", width: "10%" },
+      { key: "issue_id", label: "Issue", type: "number", width: "16%" },
+      { key: "repository", label: "Repository", type: "text", width: "11%" },
       { key: "status", label: "Status", type: "text", width: "7%" },
-      { key: "session_id", label: "Session", type: "text", width: "12%" },
-      { key: "outcome", label: "Outcome / Reason", type: "text", sortable: false, width: "18%" },
-      { key: "duration", label: "Resolution Time", type: "number", width: "10%" },
-      { key: "actions", label: "Actions", type: "text", sortable: false, width: "12%" },
+      { key: "session_id", label: "Session", type: "text", width: "10%" },
+      { key: "outcome", label: "Outcome / Reason", type: "text", sortable: false, width: "16%" },
+      { key: "acu_used", label: "ACUs", type: "number", width: "6%" },
+      { key: "duration", label: "Resolution Time", type: "number", width: "9%" },
+      { key: "actions", label: "Actions", type: "text", sortable: false, width: "15%" },
     ];
 
     const LEADERBOARD_COLUMNS = [
@@ -407,6 +423,7 @@
         pr_url: task.pr_url || "",
         failure_category: task.failure_category || "",
         failure_reason: task.failure_reason || "",
+        acu_used: task.acu_used != null ? task.acu_used : null,
       };
     }
 
@@ -548,6 +565,7 @@
       if (key === "status") return `<td class="px-4 py-3">${statusBadge(row.status)}</td>`;
       if (key === "session_id") return sessionCell(row);
       if (key === "outcome") return outcomeCell(row);
+      if (key === "acu_used") return `<td class="px-4 py-3 text-slate-400">${row.acu_used != null ? row.acu_used.toFixed(1) : "&mdash;"}</td>`;
       if (key === "duration") return `<td class="px-4 py-3 text-slate-400">${formatDuration(row.duration)}</td>`;
       if (key === "actions") return actionsCell(row);
       return "<td class=\"px-4 py-3\"></td>";
@@ -721,6 +739,40 @@
         summaryCard("Auto-Resolved Issues", resolved, "text-indigo-300"),
         summaryCard("Auto-Handled Rate", `${autoRate}%`, "text-slate-100"),
       ].join("");
+    }
+
+    const ACU_PERIOD_BUDGET = "__ASOC_ACU_PERIOD_BUDGET__";
+    const ACU_PERIOD_DAYS = "__ASOC_ACU_PERIOD_DAYS__";
+
+    function renderAcuUsage(rows) {
+      const acuValues = rows.filter((r) => r.acu_used != null).map((r) => r.acu_used);
+      const totalAcu = acuValues.reduce((s, v) => s + v, 0);
+      const resolved = rows.filter((r) => r.status === "completed" && r.acu_used != null);
+      const avgAcu = resolved.length ? resolved.reduce((s, r) => s + r.acu_used, 0) / resolved.length : null;
+
+      const container = document.getElementById("acu-kpis");
+      container.innerHTML = [
+        summaryCard("Total ACUs Consumed", acuValues.length ? totalAcu.toFixed(1) : "&mdash;", "text-amber-300"),
+        summaryCard("Avg ACUs per Resolution", avgAcu !== null ? avgAcu.toFixed(1) : "&mdash;", "text-indigo-300"),
+        summaryCard("Tasks with ACU Data", `${acuValues.length} / ${rows.length}`, "text-slate-100"),
+      ].join("");
+
+      const barContainer = document.getElementById("acu-budget-bar");
+      if (ACU_PERIOD_BUDGET && ACU_PERIOD_BUDGET > 0) {
+        barContainer.classList.remove("hidden");
+        const pct = Math.min((totalAcu / ACU_PERIOD_BUDGET) * 100, 100);
+        const remaining = Math.max(ACU_PERIOD_BUDGET - totalAcu, 0);
+        const color = pct >= 90 ? "bg-rose-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500";
+        document.getElementById("acu-budget-label").textContent = `${totalAcu.toFixed(1)} / ${ACU_PERIOD_BUDGET} ACUs used`;
+        document.getElementById("acu-budget-pct").textContent = `${pct.toFixed(1)}%`;
+        const fill = document.getElementById("acu-budget-fill");
+        fill.style.width = `${pct}%`;
+        fill.className = `h-full rounded-full transition-all duration-500 ${color}`;
+        const daysNote = ACU_PERIOD_DAYS > 0 ? ` over a ${ACU_PERIOD_DAYS}-day billing period` : "";
+        document.getElementById("acu-budget-note").textContent = `${remaining.toFixed(1)} ACUs remaining${daysNote}.`;
+      } else {
+        barContainer.classList.add("hidden");
+      }
     }
 
     function baseScales() {
@@ -964,6 +1016,7 @@
       const series = buildSeries(filteredRows);
       renderKpis(filteredRows);
       renderRoi(filteredRows);
+      renderAcuUsage(filteredRows);
       renderLeaderboard();
       renderCharts(series);
       renderCategoryChart(buildCategoryBreakdown(filteredRows));

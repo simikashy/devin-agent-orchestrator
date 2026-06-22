@@ -13,6 +13,7 @@ def make_task(**overrides):
         "updated_at": 100.0,
         "error": None,
         "session_url": None,
+        "acu_used": None,
     }
     task.update(overrides)
     return task
