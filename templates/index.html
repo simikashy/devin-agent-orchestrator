@@ -424,6 +424,7 @@
         failure_category: task.failure_category || "",
         failure_reason: task.failure_reason || "",
         acu_used: task.acu_used != null ? task.acu_used : null,
+        acu_estimated: task.acu_estimated ? true : false,
       };
     }
 
@@ -569,7 +570,12 @@
       if (key === "status") return `<td class="px-4 py-3">${statusBadge(row.status)}</td>`;
       if (key === "session_id") return sessionCell(row);
       if (key === "outcome") return outcomeCell(row);
-      if (key === "acu_used") return `<td class="px-4 py-3 text-slate-400">${row.acu_used != null ? row.acu_used.toFixed(1) : "&mdash;"}</td>`;
+      if (key === "acu_used") {
+        if (row.acu_used == null) return `<td class="px-4 py-3 text-slate-400">&mdash;</td>`;
+        const label = row.acu_estimated ? `~${row.acu_used.toFixed(1)}` : row.acu_used.toFixed(1);
+        const hint = row.acu_estimated ? " (est.)" : "";
+        return `<td class="px-4 py-3 text-slate-400" title="${row.acu_used.toFixed(2)}${hint}">${label}${hint}</td>`;
+      }
       if (key === "duration") return `<td class="px-4 py-3 text-slate-400">${formatDuration(row.duration)}</td>`;
       if (key === "actions") return actionsCell(row);
       return "<td class=\"px-4 py-3\"></td>";
@@ -753,10 +759,12 @@
       const totalAcu = acuValues.reduce((s, v) => s + v, 0);
       const resolved = rows.filter((r) => r.status === "completed" && r.acu_used != null);
       const avgAcu = resolved.length ? resolved.reduce((s, r) => s + r.acu_used, 0) / resolved.length : null;
+      const estimatedCount = rows.filter((r) => r.acu_used != null && r.acu_estimated).length;
+      const estNote = estimatedCount > 0 ? ` (${estimatedCount} est.)` : "";
 
       const container = document.getElementById("acu-kpis");
       container.innerHTML = [
-        summaryCard("Total ACUs Consumed", acuValues.length ? totalAcu.toFixed(1) : "&mdash;", "text-amber-300"),
+        summaryCard("Total ACUs Consumed", acuValues.length ? `${totalAcu.toFixed(1)}${estNote}` : "&mdash;", "text-amber-300"),
         summaryCard("Avg ACUs per Resolution", avgAcu !== null ? avgAcu.toFixed(1) : "&mdash;", "text-indigo-300"),
         summaryCard("Tasks with ACU Data", `${acuValues.length} / ${rows.length}`, "text-slate-100"),
       ].join("");
@@ -777,7 +785,8 @@
         const daysNote = ACU_PERIOD_DAYS > 0 ? ` over a ${ACU_PERIOD_DAYS}-day billing period` : "";
         document.getElementById("acu-budget-note").textContent = `${remaining.toFixed(1)} ACUs remaining${daysNote}.`;
       } else {
-        barContainer.classList.add("hidden");
+        barContainer.classList.remove("hidden");
+        barContainer.innerHTML = `<p class="text-xs text-slate-500 italic">Set ASOC_ACU_PERIOD_BUDGET to your subscription&rsquo;s ACU allowance to see a utilization bar here.</p>`;
       }
     }
 

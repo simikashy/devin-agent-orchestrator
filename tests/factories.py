@@ -14,6 +14,7 @@ def make_task(**overrides):
         "error": None,
         "session_url": None,
         "acu_used": None,
+        "acu_estimated": 0,
     }
     task.update(overrides)
     return task

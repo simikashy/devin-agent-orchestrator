@@ -21,6 +21,7 @@ TASK_COLUMNS: Tuple[str, ...] = (
     "error",
     "session_url",
     "acu_used",
+    "acu_estimated",
 )
 
 
@@ -64,7 +65,8 @@ class TaskStore:
                     updated_at REAL,
                     error TEXT,
                     session_url TEXT,
-                    acu_used REAL
+                    acu_used REAL,
+                    acu_estimated INTEGER DEFAULT 0
                 )
                 """
             )
@@ -78,6 +80,7 @@ class TaskStore:
         migrations = [
             ("session_url", "TEXT"),
             ("acu_used", "REAL"),
+            ("acu_estimated", "INTEGER DEFAULT 0"),
         ]
         for column_name, column_type in migrations:
             if column_name not in existing:
