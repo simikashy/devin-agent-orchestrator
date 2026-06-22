@@ -6,7 +6,7 @@ An event-driven remediation platform that turns labeled GitHub issues into auton
 
 ASOC is a FastAPI service that sits between your GitHub repositories and the Devin API. It listens for issue events, launches autonomous remediation sessions, posts status back to the originating issue, and persists every job so metrics survive restarts.
 
-- Event-driven: triggered by GitHub issue labels or direct API calls.
+- Event-driven: triggered by GitHub issue labels, direct API calls, or a scheduled sweep of open issues.
 - Autonomous: each job spins up a Devin session with a structured remediation prompt.
 - Closed-loop: the orchestrator tracks each session to completion, then reports the outcome back on the issue.
 - Observable: a built-in dashboard surfaces active sessions, resolved issues, MTTR, categorized failure reasons, business-value KPIs, and trend charts, with filtering, drill-down links, and in-place retry/cancel controls.
@@ -29,12 +29,20 @@ Security and bug backlogs grow faster than teams can triage them, and the slow p
 ## Architecture
 
 ```
-GitHub Webhook  ->  FastAPI Orchestrator  ->  Devin API
-   (issue           (validates, enqueues,       (autonomous
-    labeled)         persists, comments)         remediation)
+GitHub Webhook  ─┐
+                  ├──>  FastAPI Orchestrator  ──>  Devin API
+Scheduled Sweep ─┘       (validates, enqueues,       (autonomous
+                          persists, comments)          remediation)
 ```
 
-1. A GitHub issue is labeled `trigger-devin`, firing a webhook to the orchestrator.
+The orchestrator accepts work from two event sources:
+
+- **Webhook** — a GitHub issue is labeled `trigger-devin`, firing a webhook to the orchestrator.
+- **Scheduled sweep** — a background thread periodically lists open issues carrying a configured label across one or more repos and enqueues any that don't already have an in-flight task. Enabled via `ASOC_SWEEP_ENABLED=true`.
+
+Both paths feed into the same `enqueue_task` pipeline, so the concurrency cap and in-flight de-duplication apply identically.
+
+1. A GitHub issue is labeled `trigger-devin` (webhook) or discovered by the sweep, firing enqueue to the orchestrator.
 2. The FastAPI orchestrator validates the event, records a task, and enqueues a background job.
 3. The background job creates a Devin session with a structured prompt and updates the task status to `running`.
 4. On session start, the orchestrator comments back on the issue to confirm remediation has begun.
@@ -234,7 +242,7 @@ A GitHub Actions workflow at `.github/workflows/ci.yml` runs the linter (`ruff c
 ### Install dependencies
 
 ```bash
-pip install fastapi uvicorn requests python-dotenv
+pip install -r requirements.txt
 ```
 
 ### Configure environment variables
@@ -257,6 +265,10 @@ GITHUB_TOKEN=your_github_token
 | `ASOC_MAX_ACU_PER_SESSION` | Optional. Maximum ACU (AI Compute Units) budget for each Devin session. When set to a positive integer, the value is passed as `max_acu_limit` in the session creation request. When unset, the key is omitted and Devin applies its default limit. |
 | `ASOC_ACU_PERIOD_BUDGET` | Optional. Your subscription tier's ACU allowance per billing period. When set, the Analytics tab shows a budget utilization bar (consumed/budget with green→amber→red color shift). When unset, the bar is hidden and only raw ACU metrics are shown. |
 | `ASOC_ACU_PERIOD_DAYS` | Optional. Length of your billing period in days. Defaults to `30`. Used alongside `ASOC_ACU_PERIOD_BUDGET` for the utilization display. |
+| `ASOC_SWEEP_ENABLED` | Optional. Set to `true`, `1`, or `yes` to enable the scheduled sweep. Defaults to `false` (disabled). |
+| `ASOC_SWEEP_INTERVAL_SECONDS` | Optional. How often the sweep runs, in seconds. Defaults to `300` (5 minutes). Minimum `10`. |
+| `ASOC_SWEEP_REPOS` | Required when sweep is enabled. Comma-separated list of repositories to scan (e.g. `owner/repo-a,owner/repo-b`). |
+| `ASOC_SWEEP_LABEL` | Optional. The issue label the sweep looks for. Defaults to `trigger-devin` (same label the webhook uses). |
 | `LOG_LEVEL` | Optional. Logging verbosity, one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Defaults to `INFO`. |
 
 The authentication and webhook variables default to unset, which preserves the original unauthenticated behavior.
