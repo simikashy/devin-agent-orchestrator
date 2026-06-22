@@ -656,16 +656,14 @@
       return String(value).padStart(2, "0");
     }
 
-    function bucketKey(date, mode) {
+    function bucketResolution(mode) {
+      if (mode === "year") return "month";
+      return "day";
+    }
+
+    function bucketKey(date, resolution) {
       const year = date.getFullYear();
-      if (mode === "year") return String(year);
-      if (mode === "month") return `${year}-${pad(date.getMonth() + 1)}`;
-      if (mode === "week") {
-        const start = new Date(date);
-        const offset = (start.getDay() + 6) % 7;
-        start.setDate(start.getDate() - offset);
-        return `Wk ${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`;
-      }
+      if (resolution === "month") return `${year}-${pad(date.getMonth() + 1)}`;
       return `${year}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
     }
 
@@ -711,15 +709,13 @@
       return String(start.getFullYear());
     }
 
-    function generateBucketKeys(mode, start, end) {
+    function generateBucketKeys(resolution, start, end) {
       const keys = [];
       const cursor = new Date(start);
       while (cursor < end) {
-        keys.push(bucketKey(cursor, mode));
-        if (mode === "day") cursor.setDate(cursor.getDate() + 1);
-        else if (mode === "week") cursor.setDate(cursor.getDate() + 7);
-        else if (mode === "month") cursor.setMonth(cursor.getMonth() + 1);
-        else cursor.setFullYear(cursor.getFullYear() + 1);
+        keys.push(bucketKey(cursor, resolution));
+        if (resolution === "month") cursor.setMonth(cursor.getMonth() + 1);
+        else cursor.setDate(cursor.getDate() + 1);
       }
       return keys;
     }
@@ -734,13 +730,14 @@
       const endTs = end.getTime() / 1000;
       const windowed = terminal.filter((row) => row.updated_at >= startTs && row.updated_at < endTs);
 
+      const resolution = bucketResolution(granularity);
       const emptyBucket = () => ({ resolved: 0, failed: 0, cancelled: 0, durations: [] });
-      const allKeys = generateBucketKeys(granularity, start, end);
+      const allKeys = generateBucketKeys(resolution, start, end);
       const buckets = new Map();
       allKeys.forEach((key) => buckets.set(key, emptyBucket()));
 
       windowed.forEach((row) => {
-        const key = bucketKey(new Date(row.updated_at * 1000), granularity);
+        const key = bucketKey(new Date(row.updated_at * 1000), resolution);
         if (!buckets.has(key)) buckets.set(key, emptyBucket());
         const entry = buckets.get(key);
         if (row.status === "completed") {
