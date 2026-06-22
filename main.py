@@ -37,7 +37,10 @@ async def lifespan(app: FastAPI):
     log_startup_warnings()
     scheduler.start()
     recover_in_flight_tasks()
+    sweep_stop = start_sweep_thread()
     yield
+    if sweep_stop:
+        sweep_stop.set()
 
 
 app = FastAPI(title="Devin Automation Orchestrator", lifespan=lifespan)
@@ -85,6 +88,7 @@ METRICS_DEFAULT_PAGE_SIZE = 50
 METRICS_MAX_PAGE_SIZE = 200
 
 TRIGGER_LABEL = "trigger-devin"
+DEFAULT_SWEEP_INTERVAL_SECONDS = 300
 PR_STATUS = "PR"
 SESSION_BLOCKED_STATE = "blocked"
 TERMINAL_SUCCESS_STATES = {"finished"}
@@ -771,6 +775,107 @@ def recover_in_flight_tasks() -> None:
             thread.start()
         else:
             mark_task_failed(task_id, RESTART_RECOVERY_FAILURE_REASON, "configuration")
+
+
+def resolve_sweep_enabled() -> bool:
+    return os.getenv("ASOC_SWEEP_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
+
+def resolve_sweep_interval() -> int:
+    raw = os.getenv("ASOC_SWEEP_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_SWEEP_INTERVAL_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_SWEEP_INTERVAL_SECONDS
+    return value if value >= 10 else DEFAULT_SWEEP_INTERVAL_SECONDS
+
+
+def resolve_sweep_repos() -> List[str]:
+    raw = os.getenv("ASOC_SWEEP_REPOS", "").strip()
+    if not raw:
+        return []
+    return [r.strip() for r in raw.split(",") if r.strip()]
+
+
+def resolve_sweep_label() -> str:
+    return os.getenv("ASOC_SWEEP_LABEL", TRIGGER_LABEL).strip() or TRIGGER_LABEL
+
+
+def list_labeled_issues(repository: str, label: str) -> List[dict]:
+    url = f"{GITHUB_API_URL}/repos/{repository}/issues"
+    params = {"labels": label, "state": "open", "per_page": "100"}
+    try:
+        response = requests.get(url, headers=github_headers(), params=params, timeout=DEVIN_REQUEST_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except (requests.RequestException, ValueError):
+        logger.warning("sweep_list_issues_failed", extra={"repository": repository})
+        return []
+
+
+def run_sweep() -> Dict[str, int]:
+    repos = resolve_sweep_repos()
+    label = resolve_sweep_label()
+    enqueued = 0
+    skipped = 0
+    errors = 0
+
+    for repo in repos:
+        issues = list_labeled_issues(repo, label)
+        for issue in issues:
+            issue_id = str(issue.get("number", ""))
+            title = issue.get("title", "")
+            body = issue.get("body") or ""
+            if not issue_id:
+                errors += 1
+                continue
+            try:
+                payload = RemediationRequest(
+                    issue_id=issue_id,
+                    title=title,
+                    description=body,
+                    repository=repo,
+                )
+                _, duplicate = enqueue_task(payload)
+                if duplicate:
+                    skipped += 1
+                else:
+                    enqueued += 1
+            except Exception:
+                errors += 1
+                logger.exception("sweep_enqueue_error", extra={"repository": repo, "issue_id": issue_id})
+
+    logger.info(
+        "sweep_completed",
+        extra={"enqueued": enqueued, "skipped": skipped, "errors": errors, "repos": len(repos)},
+    )
+    return {"enqueued": enqueued, "skipped": skipped, "errors": errors}
+
+
+def sweep_loop(stop_event: threading.Event) -> None:
+    interval = resolve_sweep_interval()
+    logger.info(f"Scheduled sweep started (interval={interval}s, repos={resolve_sweep_repos()}).")
+    while not stop_event.is_set():
+        try:
+            run_sweep()
+        except Exception:
+            logger.exception("sweep_loop_error")
+        stop_event.wait(interval)
+
+
+def start_sweep_thread() -> Optional[threading.Event]:
+    if not resolve_sweep_enabled():
+        return None
+    repos = resolve_sweep_repos()
+    if not repos:
+        logger.warning("ASOC_SWEEP_ENABLED is set but ASOC_SWEEP_REPOS is empty; sweep disabled.")
+        return None
+    stop_event = threading.Event()
+    thread = threading.Thread(target=sweep_loop, args=(stop_event,), daemon=True)
+    thread.start()
+    return stop_event
 
 
 def log_startup_warnings() -> None:

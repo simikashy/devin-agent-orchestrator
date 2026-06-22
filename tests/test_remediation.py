@@ -423,3 +423,113 @@ def test_resolve_acu_period_days_valid(monkeypatch):
 def test_resolve_acu_period_days_invalid(monkeypatch):
     monkeypatch.setenv("ASOC_ACU_PERIOD_DAYS", "bad")
     assert main.resolve_acu_period_days() == 30
+
+
+def test_resolve_sweep_enabled_defaults_false(monkeypatch):
+    monkeypatch.delenv("ASOC_SWEEP_ENABLED", raising=False)
+    assert main.resolve_sweep_enabled() is False
+
+
+def test_resolve_sweep_enabled_true(monkeypatch):
+    monkeypatch.setenv("ASOC_SWEEP_ENABLED", "true")
+    assert main.resolve_sweep_enabled() is True
+    monkeypatch.setenv("ASOC_SWEEP_ENABLED", "1")
+    assert main.resolve_sweep_enabled() is True
+
+
+def test_resolve_sweep_interval_default(monkeypatch):
+    monkeypatch.delenv("ASOC_SWEEP_INTERVAL_SECONDS", raising=False)
+    assert main.resolve_sweep_interval() == 300
+
+
+def test_resolve_sweep_interval_custom(monkeypatch):
+    monkeypatch.setenv("ASOC_SWEEP_INTERVAL_SECONDS", "60")
+    assert main.resolve_sweep_interval() == 60
+
+
+def test_resolve_sweep_interval_minimum(monkeypatch):
+    monkeypatch.setenv("ASOC_SWEEP_INTERVAL_SECONDS", "5")
+    assert main.resolve_sweep_interval() == 300
+
+
+def test_resolve_sweep_repos(monkeypatch):
+    monkeypatch.setenv("ASOC_SWEEP_REPOS", "owner/a, owner/b")
+    assert main.resolve_sweep_repos() == ["owner/a", "owner/b"]
+
+
+def test_resolve_sweep_repos_empty(monkeypatch):
+    monkeypatch.delenv("ASOC_SWEEP_REPOS", raising=False)
+    assert main.resolve_sweep_repos() == []
+
+
+def test_resolve_sweep_label_default(monkeypatch):
+    monkeypatch.delenv("ASOC_SWEEP_LABEL", raising=False)
+    assert main.resolve_sweep_label() == "trigger-devin"
+
+
+def test_resolve_sweep_label_custom(monkeypatch):
+    monkeypatch.setenv("ASOC_SWEEP_LABEL", "auto-fix")
+    assert main.resolve_sweep_label() == "auto-fix"
+
+
+def test_run_sweep_enqueues_new_issues(store, monkeypatch):
+    issues = [
+        {"number": 10, "title": "Bug A", "body": "desc A"},
+        {"number": 20, "title": "Bug B", "body": "desc B"},
+    ]
+    monkeypatch.setenv("ASOC_SWEEP_REPOS", "octo/repo")
+    monkeypatch.setattr(main, "list_labeled_issues", lambda repo, label: issues)
+
+    result = main.run_sweep()
+    assert result["enqueued"] == 2
+    assert result["skipped"] == 0
+    assert store.count() == 2
+
+
+def test_run_sweep_deduplicates_existing(store, monkeypatch):
+    store.insert_task("existing", make_task(repository="octo/repo", issue_id="10", status="running"))
+    issues = [{"number": 10, "title": "Bug A", "body": "desc A"}]
+    monkeypatch.setenv("ASOC_SWEEP_REPOS", "octo/repo")
+    monkeypatch.setattr(main, "list_labeled_issues", lambda repo, label: issues)
+
+    result = main.run_sweep()
+    assert result["enqueued"] == 0
+    assert result["skipped"] == 1
+    assert store.count() == 1
+
+
+def test_run_sweep_mixed_new_and_existing(store, monkeypatch):
+    store.insert_task("existing", make_task(repository="octo/repo", issue_id="10", status="queued"))
+    issues = [
+        {"number": 10, "title": "Bug A", "body": "desc A"},
+        {"number": 30, "title": "Bug C", "body": "desc C"},
+    ]
+    monkeypatch.setenv("ASOC_SWEEP_REPOS", "octo/repo")
+    monkeypatch.setattr(main, "list_labeled_issues", lambda repo, label: issues)
+
+    result = main.run_sweep()
+    assert result["enqueued"] == 1
+    assert result["skipped"] == 1
+    assert store.count() == 2
+
+
+def test_run_sweep_no_repos(monkeypatch):
+    monkeypatch.delenv("ASOC_SWEEP_REPOS", raising=False)
+    result = main.run_sweep()
+    assert result["enqueued"] == 0
+    assert result["skipped"] == 0
+    assert result["errors"] == 0
+
+
+def test_run_sweep_uses_custom_label(store, monkeypatch):
+    monkeypatch.setenv("ASOC_SWEEP_REPOS", "octo/repo")
+    monkeypatch.setenv("ASOC_SWEEP_LABEL", "auto-fix")
+    captured_labels = []
+
+    def mock_list(repo, label):
+        captured_labels.append(label)
+        return []
+
+    monkeypatch.setattr(main, "list_labeled_issues", mock_list)
+    main.run_sweep()
+    assert captured_labels == ["auto-fix"]
