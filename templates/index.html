@@ -8,7 +8,7 @@
   <script src="/static/chart.umd.min.js"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
-  <div class="max-w-screen-2xl mx-auto px-6 py-10">
+  <div class="mx-auto px-6 py-10">
     <header class="flex items-center justify-between mb-6">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">ASOC Orchestrator Dashboard</h1>
@@ -85,7 +85,7 @@
         <h2 class="text-lg font-medium mb-3">Active Sessions</h2>
         <p class="text-xs text-slate-500 mb-2">Click a column header to sort.</p>
         <div class="overflow-x-auto rounded-lg border border-slate-800">
-          <table class="w-full table-fixed text-sm">
+          <table class="w-full table-fixed text-sm" style="min-width:800px">
             <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
               <tr id="active-head"></tr>
             </thead>
@@ -98,7 +98,7 @@
         <h2 class="text-lg font-medium mb-3">Resolved Issues</h2>
         <p class="text-xs text-slate-500 mb-2">Click a column header to sort.</p>
         <div class="overflow-x-auto rounded-lg border border-slate-800">
-          <table class="w-full table-fixed text-sm">
+          <table class="w-full table-fixed text-sm" style="min-width:900px">
             <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
               <tr id="resolved-head"></tr>
             </thead>
@@ -267,25 +267,25 @@
     };
 
     const ACTIVE_COLUMNS = [
-      { key: "id", label: "Task ID", type: "text", width: "14%" },
-      { key: "issue_id", label: "Issue", type: "number", width: "20%" },
-      { key: "repository", label: "Repository", type: "text", width: "14%" },
-      { key: "status", label: "Status", type: "text", width: "8%" },
-      { key: "session_id", label: "Session", type: "text", width: "14%" },
-      { key: "created_at", label: "Started", type: "number", width: "16%" },
-      { key: "actions", label: "Actions", type: "text", sortable: false, width: "14%" },
+      { key: "id", label: "Task ID", type: "text", width: "10%" },
+      { key: "issue_id", label: "Issue", type: "number" },
+      { key: "repository", label: "Repository", type: "text", width: "12%" },
+      { key: "status", label: "Status", type: "text", width: "7%" },
+      { key: "session_id", label: "Session", type: "text", width: "12%" },
+      { key: "created_at", label: "Started", type: "number", width: "13%" },
+      { key: "actions", label: "Actions", type: "text", sortable: false, width: "10%" },
     ];
 
     const RESOLVED_COLUMNS = [
-      { key: "id", label: "Task ID", type: "text", width: "10%" },
-      { key: "issue_id", label: "Issue", type: "number", width: "16%" },
-      { key: "repository", label: "Repository", type: "text", width: "11%" },
-      { key: "status", label: "Status", type: "text", width: "7%" },
-      { key: "session_id", label: "Session", type: "text", width: "10%" },
-      { key: "outcome", label: "Outcome / Reason", type: "text", sortable: false, width: "16%" },
-      { key: "acu_used", label: "ACUs", type: "number", width: "6%" },
-      { key: "duration", label: "Resolution Time", type: "number", width: "9%" },
-      { key: "actions", label: "Actions", type: "text", sortable: false, width: "15%" },
+      { key: "id", label: "Task ID", type: "text", width: "8%" },
+      { key: "issue_id", label: "Issue", type: "number" },
+      { key: "repository", label: "Repository", type: "text", width: "10%" },
+      { key: "status", label: "Status", type: "text", width: "6%" },
+      { key: "session_id", label: "Session", type: "text", width: "9%" },
+      { key: "outcome", label: "Outcome / Reason", type: "text", sortable: false, width: "14%" },
+      { key: "acu_used", label: "ACUs", type: "number", width: "5%" },
+      { key: "duration", label: "Resolution Time", type: "number", width: "8%" },
+      { key: "actions", label: "Actions", type: "text", sortable: false, width: "10%" },
     ];
 
     const LEADERBOARD_COLUMNS = [
