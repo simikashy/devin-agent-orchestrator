@@ -574,26 +574,23 @@ def test_estimate_acu_from_duration_missing_timestamps(monkeypatch):
     assert main.estimate_acu_from_duration({}) is None
 
 
-def test_backfill_acu_estimates(store, monkeypatch):
+def test_backfill_repairs_missing_session_ended_at(store, monkeypatch):
     monkeypatch.setenv("ASOC_ACU_PER_MINUTE", "1.0")
     store.insert_task("t1", make_task(status="completed", created_at=1000.0, updated_at=1120.0, acu_used=None))
-    store.insert_task("t2", make_task(status="failed", created_at=2000.0, updated_at=2300.0, acu_used=None))
-    store.insert_task("t3", make_task(status="completed", created_at=3000.0, updated_at=3060.0, acu_used=5.0))
+    store.insert_task("t2", make_task(status="completed", created_at=2000.0, updated_at=2060.0, acu_used=5.0, session_ended_at=2060.0))
 
-    count = main.backfill_acu_estimates()
-    assert count == 2
+    main.backfill_acu_estimates()
 
     t1 = store.get_task("t1")
-    assert t1["acu_used"] == 2.0
+    assert t1["session_ended_at"] is not None
+    duration_min = (t1["session_ended_at"] - t1["created_at"]) / 60.0
+    assert 5.0 <= duration_min <= 7.0
+    assert t1["acu_used"] is not None
     assert t1["acu_estimated"] == 1
 
     t2 = store.get_task("t2")
     assert t2["acu_used"] == 5.0
-    assert t2["acu_estimated"] == 1
-
-    t3 = store.get_task("t3")
-    assert t3["acu_used"] == 5.0
-    assert t3["acu_estimated"] == 0
+    assert t2["session_ended_at"] == 2060.0
 
 
 def test_backfill_acu_estimates_no_rate(store, monkeypatch):
@@ -604,8 +601,35 @@ def test_backfill_acu_estimates_no_rate(store, monkeypatch):
     assert store.get_task("t1")["acu_used"] is None
 
 
+def test_backfill_repairs_updated_at_to_match_session_end(store, monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PER_MINUTE", "1.0")
+    store.insert_task("t1", make_task(status="completed", created_at=1000.0, updated_at=9999.0, acu_used=None))
+    main.backfill_acu_estimates()
+    t1 = store.get_task("t1")
+    assert t1["session_ended_at"] is not None
+    assert t1["updated_at"] == t1["session_ended_at"]
+    duration_min = (t1["session_ended_at"] - 1000.0) / 60.0
+    assert 5.0 <= duration_min <= 7.0
+
+
+def test_session_ended_at_column_roundtrip(store):
+    store.insert_task("t1", make_task(session_ended_at=500.0))
+    task = store.get_task("t1")
+    assert task["session_ended_at"] == 500.0
+
+
 def test_acu_estimated_column_roundtrip(store):
     store.insert_task("t1", make_task(acu_used=3.5, acu_estimated=1))
     task = store.get_task("t1")
     assert task["acu_estimated"] == 1
     assert task["acu_used"] == 3.5
+
+
+def test_session_duration_prefers_session_ended_at():
+    task = {"created_at": 1000.0, "updated_at": 9999.0, "session_ended_at": 1300.0}
+    assert main.session_duration(task) == 300.0
+
+
+def test_session_duration_none_without_session_ended_at():
+    task = {"created_at": 1000.0, "updated_at": 9999.0}
+    assert main.session_duration(task) is None

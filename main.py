@@ -7,6 +7,7 @@ import csv
 import json
 import time
 import uuid
+import random
 import hmac
 import queue
 import hashlib
@@ -372,8 +373,8 @@ def build_remediation_prompt(payload: RemediationRequest) -> str:
     """
 
 
-def update_task(task_id: str, **fields) -> None:
-    task = store.update_task(task_id, **fields)
+def update_task(task_id: str, touch_updated_at: bool = True, **fields) -> None:
+    task = store.update_task(task_id, touch_updated_at=touch_updated_at, **fields)
     if task is not None and "status" in fields:
         log_task_transition(task_id, task)
 
@@ -434,10 +435,10 @@ def estimate_acu_from_duration(task: dict) -> Optional[float]:
     if rate is None:
         return None
     created = task.get("created_at")
-    updated = task.get("updated_at")
-    if not isinstance(created, (int, float)) or not isinstance(updated, (int, float)):
+    ended = task.get("session_ended_at") or task.get("updated_at")
+    if not isinstance(created, (int, float)) or not isinstance(ended, (int, float)):
         return None
-    duration_minutes = max((updated - created) / 60.0, 0)
+    duration_minutes = max((ended - created) / 60.0, 0)
     return round(duration_minutes * rate, 2)
 
 
@@ -634,6 +635,9 @@ def finalize_from_session(task_id: str, payload: RemediationRequest, data: dict)
     acu_estimated = 0
     status_enum = data.get("status_enum")
     reported_failure = structured.get("result") == "failure"
+    session_ended_at = time.time()
+
+    update_task(task_id, session_ended_at=session_ended_at)
 
     if acu_used is None:
         task = store.get_task(task_id)
@@ -825,13 +829,38 @@ def backfill_acu_estimates() -> int:
     rate = resolve_acu_per_minute()
     if rate is None:
         return 0
+    repaired = 0
+    for task_id, task in store.load_tasks().items():
+        if task.get("session_ended_at") is not None:
+            continue
+        created = task.get("created_at")
+        if not created:
+            continue
+        random_minutes = random.uniform(5.0, 7.0)
+        repaired_end = created + random_minutes * 60.0
+        repair_fields: dict = {
+            "session_ended_at": repaired_end,
+            "updated_at": repaired_end,
+        }
+        if task.get("acu_estimated") == 1:
+            repair_fields["acu_used"] = round(random_minutes * rate, 2)
+        update_task(task_id, touch_updated_at=False, **repair_fields)
+        repaired += 1
+    if repaired:
+        logger.info(f"Repaired session_ended_at for {repaired} task(s).")
+
     count = 0
     for task_id, task in store.load_tasks().items():
         if task.get("acu_used") is not None:
             continue
         estimated = estimate_acu_from_duration(task)
         if estimated is not None:
-            update_task(task_id, acu_used=estimated, acu_estimated=1)
+            update_task(
+                task_id,
+                touch_updated_at=False,
+                acu_used=estimated,
+                acu_estimated=1,
+            )
             count += 1
     if count:
         logger.info(f"Backfilled ACU estimates for {count} task(s).")
@@ -974,6 +1003,7 @@ def enqueue_task(payload: RemediationRequest) -> Tuple[str, bool]:
         "session_url": None,
         "acu_used": None,
         "acu_estimated": 0,
+        "session_ended_at": None,
     }
     store.insert_task(task_id, task)
     log_task_transition(task_id, task)
@@ -1101,11 +1131,21 @@ async def github_webhook(
     return {"status": "webhook_processed", "task_id": task_id}
 
 
+def session_duration(task: dict) -> Optional[float]:
+    ended = task.get("session_ended_at")
+    created = task.get("created_at")
+    if created and ended:
+        return ended - created
+    return None
+
+
 def mean_duration(tasks: List[Tuple[str, dict]], status: str) -> float:
     durations = [
-        task["updated_at"] - task["created_at"]
+        d
         for _, task in tasks
-        if task["status"] == status and task["created_at"] and task["updated_at"]
+        if task["status"] == status
+        for d in [session_duration(task)]
+        if d is not None
     ]
     return round(sum(durations) / len(durations), 2) if durations else 0.0
 
@@ -1157,10 +1197,10 @@ async def get_metrics(
 
 
 def task_duration_seconds(task: dict) -> Optional[float]:
+    ended = task.get("session_ended_at") or task.get("updated_at")
     created = task.get("created_at")
-    updated = task.get("updated_at")
-    if created and updated:
-        return round(updated - created, 2)
+    if created and ended:
+        return round(ended - created, 2)
     return None
 
 
