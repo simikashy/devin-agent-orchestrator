@@ -152,7 +152,14 @@
 
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-medium">Remediation Throughput</h2>
-        <div id="granularity-controls" class="inline-flex rounded-lg border border-slate-800 overflow-hidden text-xs"></div>
+        <div class="flex items-center gap-3">
+          <div class="flex items-center gap-1 text-xs">
+            <button id="chart-prev" class="px-2 py-1 rounded border border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-500">&larr;</button>
+            <span id="chart-period-label" class="text-slate-400 min-w-[100px] text-center"></span>
+            <button id="chart-next" class="px-2 py-1 rounded border border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-500">&rarr;</button>
+          </div>
+          <div id="granularity-controls" class="inline-flex rounded-lg border border-slate-800 overflow-hidden text-xs"></div>
+        </div>
       </div>
       <p class="text-xs text-slate-500 mb-3">Issues resolved, failed and cancelled over time. Click a legend item to toggle a series.</p>
       <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4 mb-10">
@@ -294,7 +301,6 @@
       { key: "resolved", label: "Resolved", type: "number" },
       { key: "failed", label: "Failed", type: "number" },
       { key: "success_rate", label: "Success Rate", type: "number" },
-      { key: "avg_resolution", label: "Avg Resolution", type: "number" },
     ];
 
     const GRANULARITIES = [
@@ -330,11 +336,13 @@
     let filteredRows = [];
     let currentView = "operations";
     let granularity = "month";
+    let periodOffset = 0;
     let avgHoursPerFix = 4;
     let throughputChart = null;
     let cumulativeChart = null;
     let failureChart = null;
     let trendChart = null;
+    let chartsAnimated = false;
 
     function escapeHtml(value) {
       if (value === null || value === undefined) return "";
@@ -387,8 +395,8 @@
         if (summary[row.status] !== undefined) summary[row.status] += 1;
       });
       const durations = rows
-        .filter((row) => row.status === "completed" && row.created_at && row.updated_at)
-        .map((row) => row.updated_at - row.created_at);
+        .filter((row) => row.status === "completed" && row.duration != null)
+        .map((row) => row.duration);
       summary.mttr = durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0;
       return summary;
     }
@@ -408,7 +416,8 @@
     }
 
     function buildRow(id, task) {
-      const duration = task.updated_at && task.created_at ? task.updated_at - task.created_at : null;
+      const endTime = task.session_ended_at || task.updated_at;
+      const duration = endTime && task.created_at ? endTime - task.created_at : null;
       return {
         id,
         issue_id: task.issue_id,
@@ -660,22 +669,83 @@
       return `${year}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
     }
 
+    function periodWindow(mode, offset) {
+      const now = new Date();
+      const start = new Date(now);
+      const end = new Date(now);
+
+      if (mode === "day") {
+        start.setDate(start.getDate() + offset);
+        start.setHours(0, 0, 0, 0);
+        end.setTime(start.getTime());
+        end.setDate(end.getDate() + 1);
+      } else if (mode === "week") {
+        const dayOfWeek = (now.getDay() + 6) % 7;
+        start.setDate(start.getDate() - dayOfWeek + offset * 7);
+        start.setHours(0, 0, 0, 0);
+        end.setTime(start.getTime());
+        end.setDate(end.getDate() + 7);
+      } else if (mode === "month") {
+        start.setMonth(start.getMonth() + offset, 1);
+        start.setHours(0, 0, 0, 0);
+        end.setTime(start.getTime());
+        end.setMonth(end.getMonth() + 1);
+      } else {
+        start.setFullYear(start.getFullYear() + offset, 0, 1);
+        start.setHours(0, 0, 0, 0);
+        end.setTime(start.getTime());
+        end.setFullYear(end.getFullYear() + 1);
+      }
+      return { start, end };
+    }
+
+    function periodLabel(mode, offset) {
+      const { start } = periodWindow(mode, offset);
+      if (mode === "day") return start.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+      if (mode === "week") {
+        const wEnd = new Date(start);
+        wEnd.setDate(wEnd.getDate() + 6);
+        return `${start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${wEnd.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+      }
+      if (mode === "month") return start.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+      return String(start.getFullYear());
+    }
+
+    function generateBucketKeys(mode, start, end) {
+      const keys = [];
+      const cursor = new Date(start);
+      while (cursor < end) {
+        keys.push(bucketKey(cursor, mode));
+        if (mode === "day") cursor.setDate(cursor.getDate() + 1);
+        else if (mode === "week") cursor.setDate(cursor.getDate() + 7);
+        else if (mode === "month") cursor.setMonth(cursor.getMonth() + 1);
+        else cursor.setFullYear(cursor.getFullYear() + 1);
+      }
+      return keys;
+    }
+
     function buildSeries(rows) {
       const terminal = rows
         .filter((row) => RESOLVED_STATUSES.includes(row.status) && row.updated_at)
         .sort((a, b) => a.updated_at - b.updated_at);
 
-      const buckets = new Map();
-      function ensure(key) {
-        if (!buckets.has(key)) buckets.set(key, { resolved: 0, failed: 0, cancelled: 0, durations: [] });
-        return buckets.get(key);
-      }
+      const { start, end } = periodWindow(granularity, periodOffset);
+      const startTs = start.getTime() / 1000;
+      const endTs = end.getTime() / 1000;
+      const windowed = terminal.filter((row) => row.updated_at >= startTs && row.updated_at < endTs);
 
-      terminal.forEach((row) => {
-        const entry = ensure(bucketKey(new Date(row.updated_at * 1000), granularity));
+      const emptyBucket = () => ({ resolved: 0, failed: 0, cancelled: 0, durations: [] });
+      const allKeys = generateBucketKeys(granularity, start, end);
+      const buckets = new Map();
+      allKeys.forEach((key) => buckets.set(key, emptyBucket()));
+
+      windowed.forEach((row) => {
+        const key = bucketKey(new Date(row.updated_at * 1000), granularity);
+        if (!buckets.has(key)) buckets.set(key, emptyBucket());
+        const entry = buckets.get(key);
         if (row.status === "completed") {
           entry.resolved += 1;
-          if (row.created_at) entry.durations.push(row.updated_at - row.created_at);
+          if (row.duration != null) entry.durations.push(row.duration);
         } else if (row.status === "failed") {
           entry.failed += 1;
         } else {
@@ -702,7 +772,7 @@
         return durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : null;
       });
 
-      return { labels, resolved, failed, cancelled, cumulative, successRate, mttr, count: terminal.length };
+      return { labels, resolved, failed, cancelled, cumulative, successRate, mttr, count: windowed.length };
     }
 
     function buildCategoryBreakdown(rows) {
@@ -718,14 +788,15 @@
     }
 
     function renderKpis(rows) {
-      const totalResolved = rows.filter((row) => row.status === "completed").length;
-      const totalFailed = rows.filter((row) => row.status === "failed").length;
+      const terminal = rows.filter((row) => RESOLVED_STATUSES.includes(row.status));
+      const totalResolved = terminal.filter((row) => row.status === "completed").length;
+      const totalFailed = terminal.filter((row) => row.status === "failed").length;
       const handled = totalResolved + totalFailed;
       const successRate = handled ? Math.round((totalResolved / handled) * 100) : 0;
 
-      const durations = rows
-        .filter((row) => row.status === "completed" && row.created_at && row.updated_at)
-        .map((row) => row.updated_at - row.created_at);
+      const durations = terminal
+        .filter((row) => row.status === "completed" && row.duration != null)
+        .map((row) => row.duration);
       const avg = durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : null;
 
       const container = document.getElementById("analytics-kpis");
@@ -820,6 +891,7 @@
       if (cumulativeChart) cumulativeChart.destroy();
       if (!hasData) return;
 
+      const animate = !chartsAnimated;
       throughputChart = new Chart(throughputCanvas, {
         type: "bar",
         data: {
@@ -833,6 +905,7 @@
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: animate ? undefined : false,
           interaction: { mode: "index", intersect: false },
           plugins: { legend: { labels: { color: COLORS.text } } },
           scales: baseScales(),
@@ -858,11 +931,13 @@
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: animate ? undefined : false,
           interaction: { mode: "index", intersect: false },
           plugins: { legend: { labels: { color: COLORS.text } } },
           scales: baseScales(),
         },
       });
+      chartsAnimated = true;
     }
 
     function renderCategoryChart(counts) {
@@ -893,6 +968,7 @@
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: chartsAnimated ? false : undefined,
           plugins: { legend: { position: "bottom", labels: { color: COLORS.text } } },
         },
       });
@@ -939,6 +1015,7 @@
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: chartsAnimated ? false : undefined,
           interaction: { mode: "index", intersect: false },
           plugins: { legend: { labels: { color: COLORS.text } } },
           scales: {
@@ -964,33 +1041,29 @@
     }
 
     function buildLeaderboard(rows) {
+      const terminal = rows.filter((row) => RESOLVED_STATUSES.includes(row.status));
       const groups = new Map();
-      rows.forEach((row) => {
+      terminal.forEach((row) => {
         const repo = row.repository || "(unknown)";
         if (!groups.has(repo)) {
-          groups.set(repo, { repository: repo, total: 0, resolved: 0, failed: 0, durations: [] });
+          groups.set(repo, { repository: repo, total: 0, resolved: 0, failed: 0 });
         }
         const entry = groups.get(repo);
         entry.total += 1;
         if (row.status === "completed") {
           entry.resolved += 1;
-          if (row.created_at && row.updated_at) entry.durations.push(row.updated_at - row.created_at);
         } else if (row.status === "failed") {
           entry.failed += 1;
         }
       });
       return Array.from(groups.values()).map((entry) => {
         const handled = entry.resolved + entry.failed;
-        const avg = entry.durations.length
-          ? entry.durations.reduce((sum, value) => sum + value, 0) / entry.durations.length
-          : null;
         return {
           repository: entry.repository,
           total: entry.total,
           resolved: entry.resolved,
           failed: entry.failed,
           success_rate: handled ? Math.round((entry.resolved / handled) * 100) : null,
-          avg_resolution: avg,
         };
       });
     }
@@ -1003,9 +1076,6 @@
       if (key === "success_rate") {
         const value = row.success_rate === null ? "&mdash;" : `${row.success_rate}%`;
         return `<td class="px-4 py-3 text-indigo-300">${value}</td>`;
-      }
-      if (key === "avg_resolution") {
-        return `<td class="px-4 py-3 text-slate-400">${row.avg_resolution === null ? "&mdash;" : formatDuration(row.avg_resolution)}</td>`;
       }
       return "<td class=\"px-4 py-3\"></td>";
     }
@@ -1038,6 +1108,12 @@
       renderTrendChart(series);
     }
 
+    function updatePeriodLabel() {
+      document.getElementById("chart-period-label").textContent = periodLabel(granularity, periodOffset);
+      document.getElementById("chart-next").disabled = periodOffset >= 0;
+      document.getElementById("chart-next").classList.toggle("opacity-30", periodOffset >= 0);
+    }
+
     function renderGranularityControls() {
       const container = document.getElementById("granularity-controls");
       container.innerHTML = GRANULARITIES.map((option) => {
@@ -1049,10 +1125,13 @@
       container.querySelectorAll("button").forEach((button) => {
         button.addEventListener("click", () => {
           granularity = button.getAttribute("data-granularity");
+          periodOffset = 0;
+          updatePeriodLabel();
           renderGranularityControls();
           renderAnalytics();
         });
       });
+      updatePeriodLabel();
     }
 
     function renderFilterSummary() {
@@ -1348,6 +1427,17 @@
     });
 
     wireFilters();
+    document.getElementById("chart-prev").addEventListener("click", () => {
+      periodOffset -= 1;
+      updatePeriodLabel();
+      renderAnalytics();
+    });
+    document.getElementById("chart-next").addEventListener("click", () => {
+      if (periodOffset >= 0) return;
+      periodOffset += 1;
+      updatePeriodLabel();
+      renderAnalytics();
+    });
     wireTrigger();
     wireActionDelegation("active-body");
     wireActionDelegation("resolved-body");

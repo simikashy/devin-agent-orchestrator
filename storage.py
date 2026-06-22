@@ -22,6 +22,7 @@ TASK_COLUMNS: Tuple[str, ...] = (
     "session_url",
     "acu_used",
     "acu_estimated",
+    "session_ended_at",
 )
 
 
@@ -66,7 +67,8 @@ class TaskStore:
                     error TEXT,
                     session_url TEXT,
                     acu_used REAL,
-                    acu_estimated INTEGER DEFAULT 0
+                    acu_estimated INTEGER DEFAULT 0,
+                    session_ended_at REAL
                 )
                 """
             )
@@ -81,6 +83,7 @@ class TaskStore:
             ("session_url", "TEXT"),
             ("acu_used", "REAL"),
             ("acu_estimated", "INTEGER DEFAULT 0"),
+            ("session_ended_at", "REAL"),
         ]
         for column_name, column_type in migrations:
             if column_name not in existing:
@@ -118,9 +121,10 @@ class TaskStore:
                 values,
             )
 
-    def update_task(self, task_id: str, **fields) -> Optional[dict]:
+    def update_task(self, task_id: str, touch_updated_at: bool = True, **fields) -> Optional[dict]:
         updates = {key: value for key, value in fields.items() if key in TASK_COLUMNS}
-        updates["updated_at"] = time.time()
+        if touch_updated_at:
+            updates["updated_at"] = time.time()
         assignments = ", ".join(f"{column} = ?" for column in updates)
         with self._cursor() as connection:
             existing = connection.execute(
