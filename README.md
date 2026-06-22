@@ -254,6 +254,7 @@ GITHUB_TOKEN=your_github_token
 | `ASOC_API_TOKEN` | Optional. When set, `POST /remediate` requires `Authorization: Bearer <ASOC_API_TOKEN>`. When unset, the endpoint is open and a startup warning is logged. |
 | `ASOC_DASHBOARD_TOKEN` | Optional. When set, `GET /metrics` requires `Authorization: Bearer <ASOC_DASHBOARD_TOKEN>`, and the dashboard page is rendered with the token injected so its polling requests stay authenticated. When unset, `/metrics` is open and the dashboard behaves exactly as before. |
 | `ASOC_MAX_CONCURRENT_SESSIONS` | Optional. Maximum number of Devin sessions allowed to run at once. Additional triggers are accepted, held as `queued`, and started as capacity frees up. Defaults to `3`. |
+| `ASOC_MAX_ACU_PER_SESSION` | Optional. Maximum ACU (AI Compute Units) budget for each Devin session. When set to a positive integer, the value is passed as `max_acu_limit` in the session creation request. When unset, the key is omitted and Devin applies its default limit. |
 | `LOG_LEVEL` | Optional. Logging verbosity, one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Defaults to `INFO`. |
 
 The authentication and webhook variables default to unset, which preserves the original unauthenticated behavior.

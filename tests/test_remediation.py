@@ -278,3 +278,47 @@ def test_run_remediation_handles_missing_session_url(store, monkeypatch):
     updated = store.get_task("task_nourl")
     assert updated["session_url"] is None
     assert updated["session_id"] == "sess_nourl"
+
+
+def test_build_session_body_contains_schema_and_metadata():
+    p = payload()
+    body = main.build_session_body(p)
+
+    assert "prompt" in body
+    assert body["idempotent"] is True
+    assert body["title"] == "ASOC remediation: Broken"
+    assert body["tags"] == ["asoc", "issue-1", "octo/repo"]
+
+    schema = body["structured_output_schema"]
+    assert schema["type"] == "object"
+    assert set(schema["required"]) == {"result", "failure_category", "failure_reason", "pull_request_url"}
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["result"]["enum"] == ["success", "failure"]
+
+    assert "max_acu_limit" not in body
+
+
+def test_build_session_body_includes_max_acu_limit(monkeypatch):
+    monkeypatch.setenv("ASOC_MAX_ACU_PER_SESSION", "10")
+    p = payload()
+    body = main.build_session_body(p)
+    assert body["max_acu_limit"] == 10
+
+
+def test_resolve_max_acu_limit_returns_none_when_unset(monkeypatch):
+    monkeypatch.delenv("ASOC_MAX_ACU_PER_SESSION", raising=False)
+    assert main.resolve_max_acu_limit() is None
+
+
+def test_resolve_max_acu_limit_returns_none_for_invalid(monkeypatch):
+    monkeypatch.setenv("ASOC_MAX_ACU_PER_SESSION", "abc")
+    assert main.resolve_max_acu_limit() is None
+    monkeypatch.setenv("ASOC_MAX_ACU_PER_SESSION", "0")
+    assert main.resolve_max_acu_limit() is None
+    monkeypatch.setenv("ASOC_MAX_ACU_PER_SESSION", "-5")
+    assert main.resolve_max_acu_limit() is None
+
+
+def test_resolve_max_acu_limit_returns_value(monkeypatch):
+    monkeypatch.setenv("ASOC_MAX_ACU_PER_SESSION", "25")
+    assert main.resolve_max_acu_limit() == 25
