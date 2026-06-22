@@ -112,3 +112,58 @@ def test_additive_migration_adds_session_url_to_legacy_db(tmp_path):
 
     store.update_task("old_task", session_url="https://app.devin.ai/sessions/migrated")
     assert store.get_task("old_task")["session_url"] == "https://app.devin.ai/sessions/migrated"
+
+
+def test_acu_used_round_trip(tmp_path):
+    store = TaskStore(tmp_path / "t.db")
+    store.insert_task("a", make_task(acu_used=12.5))
+    assert store.get_task("a")["acu_used"] == 12.5
+    store.update_task("a", acu_used=25.0)
+    assert store.get_task("a")["acu_used"] == 25.0
+
+
+def test_acu_used_defaults_to_none(tmp_path):
+    store = TaskStore(tmp_path / "t.db")
+    store.insert_task("a", make_task())
+    assert store.get_task("a")["acu_used"] is None
+
+
+def test_additive_migration_adds_acu_used_to_legacy_db(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            issue_id TEXT,
+            title TEXT,
+            repository TEXT,
+            branch TEXT,
+            status TEXT,
+            session_id TEXT,
+            pr_url TEXT,
+            failure_category TEXT,
+            failure_reason TEXT,
+            created_at REAL,
+            updated_at REAL,
+            error TEXT,
+            session_url TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, issue_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ("old_task", "99", "completed", 100.0, 200.0),
+    )
+    conn.commit()
+    conn.close()
+
+    store = TaskStore(db_path)
+    task = store.get_task("old_task")
+    assert task is not None
+    assert task["acu_used"] is None
+
+    store.update_task("old_task", acu_used=7.3)
+    assert store.get_task("old_task")["acu_used"] == 7.3

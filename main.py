@@ -66,6 +66,7 @@ CSV_EXPORT_HEADERS = (
     "created_at",
     "updated_at",
     "duration",
+    "acu_used",
 )
 
 DEVIN_REQUEST_TIMEOUT = 30
@@ -119,6 +120,8 @@ TASK_LOG_FIELDS = ("task_id", "issue_id", "repository", "status", "failure_categ
 SESSION_START_COMMENT = "Autonomous remediation initiated by ASOC pipeline."
 DASHBOARD_TOKEN_PLACEHOLDER = "__ASOC_DASHBOARD_TOKEN__"
 API_TOKEN_PLACEHOLDER = "__ASOC_API_TOKEN__"
+ACU_BUDGET_PLACEHOLDER = "__ASOC_ACU_PERIOD_BUDGET__"
+ACU_PERIOD_DAYS_PLACEHOLDER = "__ASOC_ACU_PERIOD_DAYS__"
 RESTART_RECOVERY_FAILURE_REASON = (
     "Task was queued or running without an active Devin session when the orchestrator restarted."
 )
@@ -375,14 +378,37 @@ def normalize_failure_category(category: Optional[str]) -> str:
     return "session_error"
 
 
-def mark_task_failed(task_id: str, reason: str, category: str) -> None:
+def mark_task_failed(task_id: str, reason: str, category: str, acu_used: Optional[float] = None) -> None:
     update_task(
         task_id,
         status="failed",
         error=reason,
         failure_reason=reason,
         failure_category=category,
+        acu_used=acu_used,
     )
+
+
+def resolve_acu_period_budget() -> Optional[int]:
+    raw = os.getenv("ASOC_ACU_PERIOD_BUDGET", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 1 else None
+
+
+def resolve_acu_period_days() -> int:
+    raw = os.getenv("ASOC_ACU_PERIOD_DAYS", "").strip()
+    if not raw:
+        return 30
+    try:
+        value = int(raw)
+    except ValueError:
+        return 30
+    return value if value >= 1 else 30
 
 
 def resolve_max_acu_limit() -> Optional[int]:
@@ -433,6 +459,13 @@ def extract_structured_output(data: dict) -> dict:
     return structured if isinstance(structured, dict) else {}
 
 
+def extract_acu_used(data: dict) -> Optional[float]:
+    value = data.get("total_acu_used")
+    if isinstance(value, (int, float)) and value >= 0:
+        return float(value)
+    return None
+
+
 def extract_pull_request_url(data: dict, structured: dict) -> Optional[str]:
     pull_request = data.get("pull_request")
     if isinstance(pull_request, dict) and pull_request.get("url"):
@@ -441,7 +474,9 @@ def extract_pull_request_url(data: dict, structured: dict) -> Optional[str]:
     return candidate if isinstance(candidate, str) and candidate else None
 
 
-def finalize_success(task_id: str, payload: RemediationRequest, pr_url: Optional[str]) -> None:
+def finalize_success(
+    task_id: str, payload: RemediationRequest, pr_url: Optional[str], acu_used: Optional[float] = None
+) -> None:
     update_task(
         task_id,
         status="completed",
@@ -449,6 +484,7 @@ def finalize_success(task_id: str, payload: RemediationRequest, pr_url: Optional
         failure_reason=None,
         failure_category=None,
         error=None,
+        acu_used=acu_used,
     )
     if pr_url:
         comment = f"Autonomous remediation completed by ASOC pipeline. Pull Request: {pr_url}"
@@ -457,8 +493,10 @@ def finalize_success(task_id: str, payload: RemediationRequest, pr_url: Optional
     post_issue_comment(payload.repository, payload.issue_id, comment)
 
 
-def finalize_failure(task_id: str, payload: RemediationRequest, reason: str, category: str) -> None:
-    mark_task_failed(task_id, reason, category)
+def finalize_failure(
+    task_id: str, payload: RemediationRequest, reason: str, category: str, acu_used: Optional[float] = None
+) -> None:
+    mark_task_failed(task_id, reason, category, acu_used=acu_used)
     comment = (
         "Autonomous remediation failed in ASOC pipeline. "
         f"Failure category: {category}. Reason: {reason}"
@@ -561,8 +599,12 @@ def begin_pr_tracking(task_id: str, payload: RemediationRequest, pr_url: str) ->
 def finalize_from_session(task_id: str, payload: RemediationRequest, data: dict) -> None:
     structured = extract_structured_output(data)
     pr_url = extract_pull_request_url(data, structured)
+    acu_used = extract_acu_used(data)
     status_enum = data.get("status_enum")
     reported_failure = structured.get("result") == "failure"
+
+    if acu_used is not None:
+        update_task(task_id, acu_used=acu_used)
 
     if not reported_failure and status_enum == SESSION_BLOCKED_STATE and pr_url:
         begin_pr_tracking(task_id, payload, pr_url)
@@ -573,10 +615,10 @@ def finalize_from_session(task_id: str, payload: RemediationRequest, data: dict)
         if not isinstance(reason, str) or not reason:
             reason = f"Session ended in state '{status_enum}' without a successful remediation."
         category = normalize_failure_category(structured.get("failure_category"))
-        finalize_failure(task_id, payload, reason, category)
+        finalize_failure(task_id, payload, reason, category, acu_used=acu_used)
         return
 
-    finalize_success(task_id, payload, pr_url)
+    finalize_success(task_id, payload, pr_url, acu_used=acu_used)
 
 
 def poll_session(task_id: str, payload: RemediationRequest, session_id: str) -> None:
@@ -762,6 +804,7 @@ def enqueue_task(payload: RemediationRequest) -> Tuple[str, bool]:
         "updated_at": now,
         "error": None,
         "session_url": None,
+        "acu_used": None,
     }
     store.insert_task(task_id, task)
     log_task_transition(task_id, task)
@@ -774,6 +817,8 @@ async def dashboard() -> HTMLResponse:
     template = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
     rendered = template.replace(DASHBOARD_TOKEN_PLACEHOLDER, json.dumps(get_dashboard_token()))
     rendered = rendered.replace(API_TOKEN_PLACEHOLDER, json.dumps(get_api_token()))
+    rendered = rendered.replace(ACU_BUDGET_PLACEHOLDER, json.dumps(resolve_acu_period_budget()))
+    rendered = rendered.replace(ACU_PERIOD_DAYS_PLACEHOLDER, json.dumps(resolve_acu_period_days()))
     return HTMLResponse(content=rendered)
 
 
@@ -958,6 +1003,7 @@ def isoformat_timestamp(value: Optional[float]) -> str:
 
 def csv_row_for_task(task_id: str, task: dict) -> List[object]:
     duration = task_duration_seconds(task)
+    acu = task.get("acu_used")
     return [
         task_id,
         task.get("issue_id") or "",
@@ -969,6 +1015,7 @@ def csv_row_for_task(task_id: str, task: dict) -> List[object]:
         isoformat_timestamp(task.get("created_at")),
         isoformat_timestamp(task.get("updated_at")),
         "" if duration is None else duration,
+        "" if acu is None else acu,
     ]
 
 

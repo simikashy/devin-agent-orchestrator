@@ -322,3 +322,96 @@ def test_resolve_max_acu_limit_returns_none_for_invalid(monkeypatch):
 def test_resolve_max_acu_limit_returns_value(monkeypatch):
     monkeypatch.setenv("ASOC_MAX_ACU_PER_SESSION", "25")
     assert main.resolve_max_acu_limit() == 25
+
+
+def test_extract_acu_used():
+    assert main.extract_acu_used({"total_acu_used": 5.3}) == 5.3
+    assert main.extract_acu_used({"total_acu_used": 0}) == 0.0
+    assert main.extract_acu_used({"total_acu_used": 10}) == 10.0
+    assert main.extract_acu_used({}) is None
+    assert main.extract_acu_used({"total_acu_used": -1}) is None
+    assert main.extract_acu_used({"total_acu_used": "bad"}) is None
+
+
+def test_finalize_from_session_persists_acu_used(store, monkeypatch):
+    store.insert_task("task_acu", make_task(status="running"))
+    monkeypatch.setattr(main, "post_issue_comment", lambda *a, **k: None)
+
+    data = {
+        "status_enum": "finished",
+        "structured_output": {"result": "success"},
+        "pull_request": {"url": "https://example/pr/acu"},
+        "total_acu_used": 7.2,
+    }
+    main.finalize_from_session("task_acu", payload(), data)
+
+    updated = store.get_task("task_acu")
+    assert updated["status"] == "completed"
+    assert updated["acu_used"] == 7.2
+
+
+def test_finalize_from_session_acu_used_on_failure(store, monkeypatch):
+    store.insert_task("task_acu_fail", make_task(status="running"))
+    monkeypatch.setattr(main, "post_issue_comment", lambda *a, **k: None)
+
+    data = {
+        "status_enum": "finished",
+        "structured_output": {
+            "result": "failure",
+            "failure_category": "code_bug",
+            "failure_reason": "Could not fix",
+        },
+        "total_acu_used": 3.1,
+    }
+    main.finalize_from_session("task_acu_fail", payload(), data)
+
+    updated = store.get_task("task_acu_fail")
+    assert updated["status"] == "failed"
+    assert updated["acu_used"] == 3.1
+
+
+def test_csv_export_includes_acu_used():
+    task = make_task(status="completed", acu_used=9.5)
+    row = main.csv_row_for_task("t1", task)
+    assert "acu_used" in main.CSV_EXPORT_HEADERS
+    acu_index = list(main.CSV_EXPORT_HEADERS).index("acu_used")
+    assert row[acu_index] == 9.5
+
+
+def test_csv_export_acu_used_none_renders_empty():
+    task = make_task(status="completed")
+    row = main.csv_row_for_task("t1", task)
+    acu_index = list(main.CSV_EXPORT_HEADERS).index("acu_used")
+    assert row[acu_index] == ""
+
+
+def test_resolve_acu_period_budget_unset(monkeypatch):
+    monkeypatch.delenv("ASOC_ACU_PERIOD_BUDGET", raising=False)
+    assert main.resolve_acu_period_budget() is None
+
+
+def test_resolve_acu_period_budget_valid(monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PERIOD_BUDGET", "5000")
+    assert main.resolve_acu_period_budget() == 5000
+
+
+def test_resolve_acu_period_budget_invalid(monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PERIOD_BUDGET", "abc")
+    assert main.resolve_acu_period_budget() is None
+    monkeypatch.setenv("ASOC_ACU_PERIOD_BUDGET", "0")
+    assert main.resolve_acu_period_budget() is None
+
+
+def test_resolve_acu_period_days_default(monkeypatch):
+    monkeypatch.delenv("ASOC_ACU_PERIOD_DAYS", raising=False)
+    assert main.resolve_acu_period_days() == 30
+
+
+def test_resolve_acu_period_days_valid(monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PERIOD_DAYS", "7")
+    assert main.resolve_acu_period_days() == 7
+
+
+def test_resolve_acu_period_days_invalid(monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PERIOD_DAYS", "bad")
+    assert main.resolve_acu_period_days() == 30
