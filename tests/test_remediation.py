@@ -370,6 +370,14 @@ def test_finalize_from_session_acu_used_on_failure(store, monkeypatch):
     assert updated["acu_used"] == 3.1
 
 
+def test_mark_task_failed_without_acu_preserves_existing(store):
+    store.insert_task("task_preserve", make_task(status="running", acu_used=5.5))
+    main.mark_task_failed("task_preserve", "PR closed", "configuration")
+    updated = store.get_task("task_preserve")
+    assert updated["status"] == "failed"
+    assert updated["acu_used"] == 5.5
+
+
 def test_csv_export_includes_acu_used():
     task = make_task(status="completed", acu_used=9.5)
     row = main.csv_row_for_task("t1", task)
