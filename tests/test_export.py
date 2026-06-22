@@ -15,6 +15,7 @@ EXPECTED_HEADER = [
     "updated_at",
     "duration",
     "acu_used",
+    "acu_estimated",
 ]
 
 

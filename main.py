@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
     log_startup_warnings()
     scheduler.start()
     recover_in_flight_tasks()
+    backfill_acu_estimates()
     sweep_stop = start_sweep_thread()
     yield
     if sweep_stop:
@@ -70,6 +71,7 @@ CSV_EXPORT_HEADERS = (
     "updated_at",
     "duration",
     "acu_used",
+    "acu_estimated",
 )
 
 DEVIN_REQUEST_TIMEOUT = 30
@@ -416,6 +418,29 @@ def resolve_acu_period_days() -> int:
     return value if value >= 1 else 30
 
 
+def resolve_acu_per_minute() -> Optional[float]:
+    raw = os.getenv("ASOC_ACU_PER_MINUTE", "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def estimate_acu_from_duration(task: dict) -> Optional[float]:
+    rate = resolve_acu_per_minute()
+    if rate is None:
+        return None
+    created = task.get("created_at")
+    updated = task.get("updated_at")
+    if not isinstance(created, (int, float)) or not isinstance(updated, (int, float)):
+        return None
+    duration_minutes = max((updated - created) / 60.0, 0)
+    return round(duration_minutes * rate, 2)
+
+
 def resolve_max_acu_limit() -> Optional[int]:
     raw = os.getenv("ASOC_MAX_ACU_PER_SESSION", "").strip()
     if not raw:
@@ -606,11 +631,20 @@ def finalize_from_session(task_id: str, payload: RemediationRequest, data: dict)
     structured = extract_structured_output(data)
     pr_url = extract_pull_request_url(data, structured)
     acu_used = extract_acu_used(data)
+    acu_estimated = 0
     status_enum = data.get("status_enum")
     reported_failure = structured.get("result") == "failure"
 
+    if acu_used is None:
+        task = store.get_task(task_id)
+        if task:
+            estimated = estimate_acu_from_duration(task)
+            if estimated is not None:
+                acu_used = estimated
+                acu_estimated = 1
+
     if acu_used is not None:
-        update_task(task_id, acu_used=acu_used)
+        update_task(task_id, acu_used=acu_used, acu_estimated=acu_estimated)
 
     if not reported_failure and status_enum == SESSION_BLOCKED_STATE and pr_url:
         begin_pr_tracking(task_id, payload, pr_url)
@@ -644,6 +678,16 @@ def poll_session(task_id: str, payload: RemediationRequest, session_id: str) -> 
         data = response.json()
         status_enum = data.get("status_enum")
         if status_enum in SESSION_POLL_TERMINAL_STATES:
+            logger.debug(
+                "session_terminal_response",
+                extra={
+                    "task_id": task_id,
+                    "status_enum": status_enum,
+                    "response_keys": sorted(data.keys()),
+                    "has_total_acu_used": "total_acu_used" in data,
+                    "total_acu_used_value": data.get("total_acu_used"),
+                },
+            )
             if is_cancel_requested(task_id):
                 clear_cancel(task_id)
                 return
@@ -775,6 +819,23 @@ def recover_in_flight_tasks() -> None:
             thread.start()
         else:
             mark_task_failed(task_id, RESTART_RECOVERY_FAILURE_REASON, "configuration")
+
+
+def backfill_acu_estimates() -> int:
+    rate = resolve_acu_per_minute()
+    if rate is None:
+        return 0
+    count = 0
+    for task_id, task in store.load_tasks().items():
+        if task.get("acu_used") is not None:
+            continue
+        estimated = estimate_acu_from_duration(task)
+        if estimated is not None:
+            update_task(task_id, acu_used=estimated, acu_estimated=1)
+            count += 1
+    if count:
+        logger.info(f"Backfilled ACU estimates for {count} task(s).")
+    return count
 
 
 def resolve_sweep_enabled() -> bool:
@@ -912,6 +973,7 @@ def enqueue_task(payload: RemediationRequest) -> Tuple[str, bool]:
         "error": None,
         "session_url": None,
         "acu_used": None,
+        "acu_estimated": 0,
     }
     store.insert_task(task_id, task)
     log_task_transition(task_id, task)
@@ -1123,6 +1185,7 @@ def csv_row_for_task(task_id: str, task: dict) -> List[object]:
         isoformat_timestamp(task.get("updated_at")),
         "" if duration is None else duration,
         "" if acu is None else acu,
+        "yes" if task.get("acu_estimated") else "no",
     ]
 
 

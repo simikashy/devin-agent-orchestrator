@@ -269,6 +269,7 @@ GITHUB_TOKEN=your_github_token
 | `ASOC_SWEEP_INTERVAL_SECONDS` | Optional. How often the sweep runs, in seconds. Defaults to `300` (5 minutes). Minimum `10`. |
 | `ASOC_SWEEP_REPOS` | Required when sweep is enabled. Comma-separated list of repositories to scan (e.g. `owner/repo-a,owner/repo-b`). |
 | `ASOC_SWEEP_LABEL` | Optional. The issue label the sweep looks for. Defaults to `trigger-devin` (same label the webhook uses). |
+| `ASOC_ACU_PER_MINUTE` | Optional. ACU-per-minute rate used to estimate compute usage from task duration when the Devin API does not return `total_acu_used`. When set (e.g. `0.5`), finalized tasks without API-reported ACUs get a duration-based estimate marked as `(est.)` in the dashboard and CSV. When unset, tasks without API data show no ACU value. |
 | `LOG_LEVEL` | Optional. Logging verbosity, one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Defaults to `INFO`. |
 
 The authentication and webhook variables default to unset, which preserves the original unauthenticated behavior.

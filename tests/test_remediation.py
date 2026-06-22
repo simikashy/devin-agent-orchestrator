@@ -533,3 +533,79 @@ def test_run_sweep_uses_custom_label(store, monkeypatch):
     monkeypatch.setattr(main, "list_labeled_issues", mock_list)
     main.run_sweep()
     assert captured_labels == ["auto-fix"]
+
+
+def test_resolve_acu_per_minute_unset(monkeypatch):
+    monkeypatch.delenv("ASOC_ACU_PER_MINUTE", raising=False)
+    assert main.resolve_acu_per_minute() is None
+
+
+def test_resolve_acu_per_minute_valid(monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PER_MINUTE", "0.5")
+    assert main.resolve_acu_per_minute() == 0.5
+
+
+def test_resolve_acu_per_minute_invalid(monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PER_MINUTE", "bad")
+    assert main.resolve_acu_per_minute() is None
+
+
+def test_resolve_acu_per_minute_zero(monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PER_MINUTE", "0")
+    assert main.resolve_acu_per_minute() is None
+
+
+def test_estimate_acu_from_duration(monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PER_MINUTE", "0.5")
+    task = {"created_at": 1000.0, "updated_at": 1600.0}
+    result = main.estimate_acu_from_duration(task)
+    assert result == 5.0
+
+
+def test_estimate_acu_from_duration_no_rate(monkeypatch):
+    monkeypatch.delenv("ASOC_ACU_PER_MINUTE", raising=False)
+    task = {"created_at": 1000.0, "updated_at": 1600.0}
+    assert main.estimate_acu_from_duration(task) is None
+
+
+def test_estimate_acu_from_duration_missing_timestamps(monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PER_MINUTE", "0.5")
+    assert main.estimate_acu_from_duration({"created_at": None, "updated_at": None}) is None
+    assert main.estimate_acu_from_duration({}) is None
+
+
+def test_backfill_acu_estimates(store, monkeypatch):
+    monkeypatch.setenv("ASOC_ACU_PER_MINUTE", "1.0")
+    store.insert_task("t1", make_task(status="completed", created_at=1000.0, updated_at=1120.0, acu_used=None))
+    store.insert_task("t2", make_task(status="failed", created_at=2000.0, updated_at=2300.0, acu_used=None))
+    store.insert_task("t3", make_task(status="completed", created_at=3000.0, updated_at=3060.0, acu_used=5.0))
+
+    count = main.backfill_acu_estimates()
+    assert count == 2
+
+    t1 = store.get_task("t1")
+    assert t1["acu_used"] == 2.0
+    assert t1["acu_estimated"] == 1
+
+    t2 = store.get_task("t2")
+    assert t2["acu_used"] == 5.0
+    assert t2["acu_estimated"] == 1
+
+    t3 = store.get_task("t3")
+    assert t3["acu_used"] == 5.0
+    assert t3["acu_estimated"] == 0
+
+
+def test_backfill_acu_estimates_no_rate(store, monkeypatch):
+    monkeypatch.delenv("ASOC_ACU_PER_MINUTE", raising=False)
+    store.insert_task("t1", make_task(status="completed", created_at=1000.0, updated_at=1120.0, acu_used=None))
+    count = main.backfill_acu_estimates()
+    assert count == 0
+    assert store.get_task("t1")["acu_used"] is None
+
+
+def test_acu_estimated_column_roundtrip(store):
+    store.insert_task("t1", make_task(acu_used=3.5, acu_estimated=1))
+    task = store.get_task("t1")
+    assert task["acu_estimated"] == 1
+    assert task["acu_used"] == 3.5
