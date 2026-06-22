@@ -8,7 +8,7 @@
   <script src="/static/chart.umd.min.js"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
-  <div class="max-w-6xl mx-auto px-6 py-10">
+  <div class="max-w-screen-2xl mx-auto px-6 py-10">
     <header class="flex items-center justify-between mb-6">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">ASOC Orchestrator Dashboard</h1>
@@ -85,7 +85,7 @@
         <h2 class="text-lg font-medium mb-3">Active Sessions</h2>
         <p class="text-xs text-slate-500 mb-2">Click a column header to sort.</p>
         <div class="overflow-x-auto rounded-lg border border-slate-800">
-          <table class="min-w-full text-sm">
+          <table class="w-full table-fixed text-sm">
             <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
               <tr id="active-head"></tr>
             </thead>
@@ -98,7 +98,7 @@
         <h2 class="text-lg font-medium mb-3">Resolved Issues</h2>
         <p class="text-xs text-slate-500 mb-2">Click a column header to sort.</p>
         <div class="overflow-x-auto rounded-lg border border-slate-800">
-          <table class="min-w-full text-sm">
+          <table class="w-full table-fixed text-sm">
             <thead class="bg-slate-900 text-slate-400 uppercase text-xs">
               <tr id="resolved-head"></tr>
             </thead>
@@ -252,24 +252,24 @@
     };
 
     const ACTIVE_COLUMNS = [
-      { key: "id", label: "Task ID", type: "text" },
-      { key: "issue_id", label: "Issue", type: "number" },
-      { key: "repository", label: "Repository", type: "text" },
-      { key: "status", label: "Status", type: "text" },
-      { key: "session_id", label: "Session", type: "text" },
-      { key: "created_at", label: "Started", type: "number" },
-      { key: "actions", label: "Actions", type: "text", sortable: false },
+      { key: "id", label: "Task ID", type: "text", width: "14%" },
+      { key: "issue_id", label: "Issue", type: "number", width: "20%" },
+      { key: "repository", label: "Repository", type: "text", width: "14%" },
+      { key: "status", label: "Status", type: "text", width: "8%" },
+      { key: "session_id", label: "Session", type: "text", width: "14%" },
+      { key: "created_at", label: "Started", type: "number", width: "16%" },
+      { key: "actions", label: "Actions", type: "text", sortable: false, width: "14%" },
     ];
 
     const RESOLVED_COLUMNS = [
-      { key: "id", label: "Task ID", type: "text" },
-      { key: "issue_id", label: "Issue", type: "number" },
-      { key: "repository", label: "Repository", type: "text" },
-      { key: "status", label: "Status", type: "text" },
-      { key: "session_id", label: "Session", type: "text" },
-      { key: "outcome", label: "Outcome / Reason", type: "text", sortable: false },
-      { key: "duration", label: "Resolution Time", type: "number" },
-      { key: "actions", label: "Actions", type: "text", sortable: false },
+      { key: "id", label: "Task ID", type: "text", width: "12%" },
+      { key: "issue_id", label: "Issue", type: "number", width: "17%" },
+      { key: "repository", label: "Repository", type: "text", width: "12%" },
+      { key: "status", label: "Status", type: "text", width: "7%" },
+      { key: "session_id", label: "Session", type: "text", width: "12%" },
+      { key: "outcome", label: "Outcome / Reason", type: "text", sortable: false, width: "18%" },
+      { key: "duration", label: "Resolution Time", type: "number", width: "10%" },
+      { key: "actions", label: "Actions", type: "text", sortable: false, width: "12%" },
     ];
 
     const LEADERBOARD_COLUMNS = [
@@ -457,7 +457,8 @@
           const sortable = col.sortable !== false;
           const cls = sortable ? "cursor-pointer hover:text-slate-200" : "";
           const indicator = sortable ? sortIndicator(state, col.key) : "";
-          return `<th class="px-4 py-3 text-left select-none ${cls}" data-key="${col.key}" data-sortable="${sortable}">${escapeHtml(col.label)}${indicator}</th>`;
+          const widthStyle = col.width ? ` style="width:${col.width}"` : "";
+          return `<th class="px-4 py-3 text-left select-none ${cls}" data-key="${col.key}" data-sortable="${sortable}"${widthStyle}>${escapeHtml(col.label)}${indicator}</th>`;
         })
         .join("");
       head.querySelectorAll("th").forEach((th) => {
@@ -472,9 +473,9 @@
       const title = escapeHtml(row.title);
       if (row.repository && row.issue_id) {
         const href = `https://github.com/${encodeURI(row.repository)}/issues/${encodeURIComponent(row.issue_id)}`;
-        return `<td class="px-4 py-3"><a href="${href}" target="_blank" rel="noopener" class="text-indigo-300 hover:underline">${label}</a> ${title}</td>`;
+        return `<td class="px-4 py-3 truncate" title="${label} ${title}"><a href="${href}" target="_blank" rel="noopener" class="text-indigo-300 hover:underline">${label}</a> ${title}</td>`;
       }
-      return `<td class="px-4 py-3">${label} ${title}</td>`;
+      return `<td class="px-4 py-3 truncate" title="${label} ${title}">${label} ${title}</td>`;
     }
 
     function sessionLink(row) {
@@ -488,14 +489,14 @@
         const prHref = escapeHtml(row.pr_url);
         const session = sessionLink(row);
         const pr = `<a href="${prHref}" target="_blank" rel="noopener" class="text-indigo-300 hover:underline text-xs">View Pull Request</a>`;
-        return `<td class="px-4 py-3"><div class="flex flex-col gap-1">${session}${pr}</div></td>`;
+        return `<td class="px-4 py-3 overflow-hidden"><div class="flex flex-col gap-1 overflow-hidden">${session}${pr}</div></td>`;
       }
       return sessionCell(row);
     }
 
     function sessionCell(row) {
       if (!row.session_id) return `<td class="px-4 py-3 text-slate-500">&mdash;</td>`;
-      return `<td class="px-4 py-3">${sessionLink(row)}</td>`;
+      return `<td class="px-4 py-3 truncate">${sessionLink(row)}</td>`;
     }
 
     function actionButton(action, taskId, classes, label) {
@@ -511,13 +512,13 @@
         buttons.push(actionButton("retry", row.id, "bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30", "Retry"));
       }
       buttons.push(actionButton("remove", row.id, "bg-slate-700/40 text-slate-300 hover:bg-slate-700/70", "Remove"));
-      return `<td class="px-4 py-3"><div class="flex gap-2">${buttons.join("")}</div></td>`;
+      return `<td class="px-4 py-3 whitespace-nowrap"><div class="flex gap-2">${buttons.join("")}</div></td>`;
     }
 
     function activeCell(row, key) {
-      if (key === "id") return `<td class="px-4 py-3 font-mono text-xs">${escapeHtml(row.id)}</td>`;
+      if (key === "id") return `<td class="px-4 py-3 font-mono text-xs truncate" title="${escapeHtml(row.id)}">${escapeHtml(row.id)}</td>`;
       if (key === "issue_id") return issueCell(row);
-      if (key === "repository") return `<td class="px-4 py-3 text-slate-300">${row.repository ? escapeHtml(row.repository) : "&mdash;"}</td>`;
+      if (key === "repository") return `<td class="px-4 py-3 text-slate-300 truncate" title="${row.repository ? escapeHtml(row.repository) : ''}">${row.repository ? escapeHtml(row.repository) : "&mdash;"}</td>`;
       if (key === "status") return `<td class="px-4 py-3">${statusBadge(row.status)}</td>`;
       if (key === "session_id") return activeSessionCell(row);
       if (key === "created_at") return `<td class="px-4 py-3 text-slate-400">${formatTimestamp(row.created_at)}</td>`;
@@ -537,13 +538,13 @@
       }
       const reason = row.failure_reason ? escapeHtml(row.failure_reason) : "Unknown failure";
       const badge = row.failure_category ? categoryBadge(row.failure_category) : "";
-      return `<td class="px-4 py-3"><div class="flex flex-col gap-1">${badge ? `<div>${badge}</div>` : ""}<span class="text-slate-300">${reason}</span></div></td>`;
+      return `<td class="px-4 py-3"><div class="flex flex-col gap-1 overflow-hidden">${badge ? `<div>${badge}</div>` : ""}<span class="text-slate-300 truncate block" title="${reason}">${reason}</span></div></td>`;
     }
 
     function resolvedCell(row, key) {
-      if (key === "id") return `<td class="px-4 py-3 font-mono text-xs">${escapeHtml(row.id)}</td>`;
+      if (key === "id") return `<td class="px-4 py-3 font-mono text-xs truncate" title="${escapeHtml(row.id)}">${escapeHtml(row.id)}</td>`;
       if (key === "issue_id") return issueCell(row);
-      if (key === "repository") return `<td class="px-4 py-3 text-slate-300">${row.repository ? escapeHtml(row.repository) : "&mdash;"}</td>`;
+      if (key === "repository") return `<td class="px-4 py-3 text-slate-300 truncate" title="${row.repository ? escapeHtml(row.repository) : ''}">${row.repository ? escapeHtml(row.repository) : "&mdash;"}</td>`;
       if (key === "status") return `<td class="px-4 py-3">${statusBadge(row.status)}</td>`;
       if (key === "session_id") return sessionCell(row);
       if (key === "outcome") return outcomeCell(row);
