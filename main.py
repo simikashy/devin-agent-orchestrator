@@ -92,6 +92,21 @@ SESSION_POLL_TERMINAL_STATES = TERMINAL_SUCCESS_STATES | TERMINAL_FAILURE_STATES
 VALID_FAILURE_CATEGORIES = {"code_bug", "test_failure", "configuration"}
 NON_TERMINAL_STATES = {"queued", "running", PR_STATUS}
 
+STRUCTURED_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "result": {"type": "string", "enum": ["success", "failure"]},
+        "failure_category": {
+            "type": ["string", "null"],
+            "enum": ["code_bug", "test_failure", "configuration", None],
+        },
+        "failure_reason": {"type": ["string", "null"]},
+        "pull_request_url": {"type": ["string", "null"]},
+    },
+    "required": ["result", "failure_category", "failure_reason", "pull_request_url"],
+    "additionalProperties": False,
+}
+
 LOG_LEVELS = {
     "CRITICAL": logging.CRITICAL,
     "ERROR": logging.ERROR,
@@ -338,11 +353,13 @@ def build_remediation_prompt(payload: RemediationRequest) -> str:
     8. Open a Pull Request back to {payload.branch} summarizing the root cause, the fix, and the verification you performed. When this work corresponds to a tracked GitHub issue, include a closing keyword such as "Closes #{payload.issue_id}" in the Pull Request description so merging the Pull Request resolves that issue.
 
     Actionable Reporting:
-    When you stop, set your session structured output to a JSON object with exactly these keys:
-    - "result": "success" or "failure"
-    - "failure_category": one of "code_bug", "test_failure", "configuration", or null when result is "success"
-    - "failure_reason": a single concise sentence a human manager can read, or null when result is "success"
-    - "pull_request_url": the opened Pull Request URL, or null when none was opened
+    When you stop, set your session structured output to a JSON object matching the provided schema.
+    The object must contain exactly these keys:
+    - "result": "success" or "failure" (required)
+    - "failure_category": one of "code_bug", "test_failure", "configuration", or null when result is "success" (required)
+    - "failure_reason": a single concise sentence a human manager can read, or null when result is "success" (required)
+    - "pull_request_url": the opened Pull Request URL, or null when none was opened (required)
+    No additional keys are allowed.
     """
 
 
@@ -368,8 +385,33 @@ def mark_task_failed(task_id: str, reason: str, category: str) -> None:
     )
 
 
+def resolve_max_acu_limit() -> Optional[int]:
+    raw = os.getenv("ASOC_MAX_ACU_PER_SESSION", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 1 else None
+
+
+def build_session_body(payload: RemediationRequest) -> dict:
+    body: Dict[str, object] = {
+        "prompt": build_remediation_prompt(payload),
+        "structured_output_schema": STRUCTURED_OUTPUT_SCHEMA,
+        "idempotent": True,
+        "title": f"ASOC remediation: {payload.title}",
+        "tags": ["asoc", f"issue-{payload.issue_id}", payload.repository],
+    }
+    max_acu = resolve_max_acu_limit()
+    if max_acu is not None:
+        body["max_acu_limit"] = max_acu
+    return body
+
+
 def create_devin_session(payload: RemediationRequest) -> requests.Response:
-    body = {"prompt": build_remediation_prompt(payload)}
+    body = build_session_body(payload)
     return requests.post(
         f"{DEVIN_API_URL}/sessions",
         json=body,
