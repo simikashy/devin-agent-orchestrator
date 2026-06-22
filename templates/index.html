@@ -450,6 +450,10 @@
         .filter(passesClientFilters);
     }
 
+    function computeAllRows() {
+      return Object.entries(latestTasks).map(([id, task]) => buildRow(id, task));
+    }
+
     function compareRows(a, b, column, dir) {
       const factor = dir === "asc" ? 1 : -1;
       let av = a[column.key];
@@ -741,10 +745,10 @@
       ].join("");
     }
 
-    const ACU_PERIOD_BUDGET = "__ASOC_ACU_PERIOD_BUDGET__";
-    const ACU_PERIOD_DAYS = "__ASOC_ACU_PERIOD_DAYS__";
+    const ACU_PERIOD_BUDGET = __ASOC_ACU_PERIOD_BUDGET__;
+    const ACU_PERIOD_DAYS = __ASOC_ACU_PERIOD_DAYS__;
 
-    function renderAcuUsage(rows) {
+    function renderAcuUsage(rows, allRows) {
       const acuValues = rows.filter((r) => r.acu_used != null).map((r) => r.acu_used);
       const totalAcu = acuValues.reduce((s, v) => s + v, 0);
       const resolved = rows.filter((r) => r.status === "completed" && r.acu_used != null);
@@ -758,12 +762,14 @@
       ].join("");
 
       const barContainer = document.getElementById("acu-budget-bar");
-      if (ACU_PERIOD_BUDGET && ACU_PERIOD_BUDGET > 0) {
+      if (ACU_PERIOD_BUDGET !== null && ACU_PERIOD_BUDGET > 0) {
         barContainer.classList.remove("hidden");
-        const pct = Math.min((totalAcu / ACU_PERIOD_BUDGET) * 100, 100);
-        const remaining = Math.max(ACU_PERIOD_BUDGET - totalAcu, 0);
+        const allAcuValues = allRows.filter((r) => r.acu_used != null).map((r) => r.acu_used);
+        const accountTotal = allAcuValues.reduce((s, v) => s + v, 0);
+        const pct = Math.min((accountTotal / ACU_PERIOD_BUDGET) * 100, 100);
+        const remaining = Math.max(ACU_PERIOD_BUDGET - accountTotal, 0);
         const color = pct >= 90 ? "bg-rose-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500";
-        document.getElementById("acu-budget-label").textContent = `${totalAcu.toFixed(1)} / ${ACU_PERIOD_BUDGET} ACUs used`;
+        document.getElementById("acu-budget-label").textContent = `${accountTotal.toFixed(1)} / ${ACU_PERIOD_BUDGET} ACUs used (all tasks)`;
         document.getElementById("acu-budget-pct").textContent = `${pct.toFixed(1)}%`;
         const fill = document.getElementById("acu-budget-fill");
         fill.style.width = `${pct}%`;
@@ -1016,7 +1022,7 @@
       const series = buildSeries(filteredRows);
       renderKpis(filteredRows);
       renderRoi(filteredRows);
-      renderAcuUsage(filteredRows);
+      renderAcuUsage(filteredRows, computeAllRows());
       renderLeaderboard();
       renderCharts(series);
       renderCategoryChart(buildCategoryBreakdown(filteredRows));

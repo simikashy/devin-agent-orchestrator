@@ -379,14 +379,15 @@ def normalize_failure_category(category: Optional[str]) -> str:
 
 
 def mark_task_failed(task_id: str, reason: str, category: str, acu_used: Optional[float] = None) -> None:
-    update_task(
-        task_id,
-        status="failed",
-        error=reason,
-        failure_reason=reason,
-        failure_category=category,
-        acu_used=acu_used,
-    )
+    fields: Dict[str, object] = {
+        "status": "failed",
+        "error": reason,
+        "failure_reason": reason,
+        "failure_category": category,
+    }
+    if acu_used is not None:
+        fields["acu_used"] = acu_used
+    update_task(task_id, **fields)
 
 
 def resolve_acu_period_budget() -> Optional[int]:
@@ -477,15 +478,16 @@ def extract_pull_request_url(data: dict, structured: dict) -> Optional[str]:
 def finalize_success(
     task_id: str, payload: RemediationRequest, pr_url: Optional[str], acu_used: Optional[float] = None
 ) -> None:
-    update_task(
-        task_id,
-        status="completed",
-        pr_url=pr_url,
-        failure_reason=None,
-        failure_category=None,
-        error=None,
-        acu_used=acu_used,
-    )
+    fields: Dict[str, object] = {
+        "status": "completed",
+        "pr_url": pr_url,
+        "failure_reason": None,
+        "failure_category": None,
+        "error": None,
+    }
+    if acu_used is not None:
+        fields["acu_used"] = acu_used
+    update_task(task_id, **fields)
     if pr_url:
         comment = f"Autonomous remediation completed by ASOC pipeline. Pull Request: {pr_url}"
     else:
