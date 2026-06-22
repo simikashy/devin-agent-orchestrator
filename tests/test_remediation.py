@@ -214,3 +214,67 @@ def test_recover_resumes_pr_tracking_for_pr_tasks(store, monkeypatch):
 
     assert tracked == [("task_recover", "https://github.com/octo/repo/pull/99")]
     assert store.get_task("task_recover")["status"] == "PR"
+
+
+def test_run_remediation_persists_session_url(store, monkeypatch):
+    store.insert_task("task_url", make_task(status="queued"))
+    monkeypatch.setattr(main, "post_issue_comment", lambda *a, **k: None)
+    monkeypatch.setattr(
+        main,
+        "create_devin_session",
+        lambda p: FakeResponse(
+            200,
+            {
+                "session_id": "sess_url_1",
+                "url": "https://app.devin.ai/sessions/sess_url_1",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "get_devin_session",
+        lambda sid: FakeResponse(
+            200,
+            {
+                "status_enum": "finished",
+                "structured_output": {"result": "success"},
+                "pull_request": {"url": "https://example/pr/url-test"},
+            },
+        ),
+    )
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
+
+    main.run_devin_remediation("task_url", payload())
+
+    updated = store.get_task("task_url")
+    assert updated["session_url"] == "https://app.devin.ai/sessions/sess_url_1"
+    assert updated["session_id"] == "sess_url_1"
+
+
+def test_run_remediation_handles_missing_session_url(store, monkeypatch):
+    store.insert_task("task_nourl", make_task(status="queued"))
+    monkeypatch.setattr(main, "post_issue_comment", lambda *a, **k: None)
+    monkeypatch.setattr(
+        main,
+        "create_devin_session",
+        lambda p: FakeResponse(200, {"session_id": "sess_nourl"}),
+    )
+    monkeypatch.setattr(
+        main,
+        "get_devin_session",
+        lambda sid: FakeResponse(
+            200,
+            {
+                "status_enum": "finished",
+                "structured_output": {"result": "success"},
+                "pull_request": {"url": "https://example/pr/nourl"},
+            },
+        ),
+    )
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
+
+    main.run_devin_remediation("task_nourl", payload())
+
+    updated = store.get_task("task_nourl")
+    assert updated["session_url"] is None
+    assert updated["session_id"] == "sess_nourl"

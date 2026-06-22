@@ -594,8 +594,10 @@ def run_devin_remediation(task_id: str, payload: RemediationRequest) -> None:
         )
         return
 
-    session_id = response.json().get("session_id")
-    update_task(task_id, status="running", session_id=session_id)
+    response_data = response.json()
+    session_id = response_data.get("session_id")
+    session_url = response_data.get("url")
+    update_task(task_id, status="running", session_id=session_id, session_url=session_url)
     post_issue_comment(payload.repository, payload.issue_id, SESSION_START_COMMENT)
 
     if session_id:
@@ -717,6 +719,7 @@ def enqueue_task(payload: RemediationRequest) -> Tuple[str, bool]:
         "created_at": now,
         "updated_at": now,
         "error": None,
+        "session_url": None,
     }
     store.insert_task(task_id, task)
     log_task_transition(task_id, task)

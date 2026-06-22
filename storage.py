@@ -19,6 +19,7 @@ TASK_COLUMNS: Tuple[str, ...] = (
     "created_at",
     "updated_at",
     "error",
+    "session_url",
 )
 
 
@@ -60,10 +61,26 @@ class TaskStore:
                     failure_reason TEXT,
                     created_at REAL,
                     updated_at REAL,
-                    error TEXT
+                    error TEXT,
+                    session_url TEXT
                 )
                 """
             )
+            self._migrate_add_columns(connection)
+
+    def _migrate_add_columns(self, connection: sqlite3.Connection) -> None:
+        existing = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        migrations = [
+            ("session_url", "TEXT"),
+        ]
+        for column_name, column_type in migrations:
+            if column_name not in existing:
+                connection.execute(
+                    f"ALTER TABLE tasks ADD COLUMN {column_name} {column_type}"
+                )
 
     def _row_to_task(self, row: sqlite3.Row) -> Dict[str, object]:
         return {column: row[column] for column in TASK_COLUMNS}
