@@ -400,6 +400,7 @@
         repository: task.repository || "",
         status: task.status,
         session_id: task.session_id || "",
+        session_url: task.session_url || "",
         created_at: task.created_at || 0,
         updated_at: task.updated_at || 0,
         duration,
@@ -478,8 +479,8 @@
 
     function sessionLink(row) {
       if (!row.session_id) return "";
-      const href = `https://app.devin.ai/sessions/${encodeURIComponent(row.session_id)}`;
-      return `<a href="${href}" target="_blank" rel="noopener" class="font-mono text-xs text-indigo-300 hover:underline">${escapeHtml(row.session_id)}</a>`;
+      const href = row.session_url || `https://app.devin.ai/sessions/${encodeURIComponent(row.session_id)}`;
+      return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener" class="font-mono text-xs text-indigo-300 hover:underline">${escapeHtml(row.session_id)}</a>`;
     }
 
     function activeSessionCell(row) {

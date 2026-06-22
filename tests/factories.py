@@ -12,6 +12,7 @@ def make_task(**overrides):
         "created_at": 100.0,
         "updated_at": 100.0,
         "error": None,
+        "session_url": None,
     }
     task.update(overrides)
     return task

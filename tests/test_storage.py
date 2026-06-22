@@ -62,3 +62,53 @@ def test_find_in_flight(tmp_path):
 def test_ping(tmp_path):
     store = TaskStore(tmp_path / "t.db")
     assert store.ping() is True
+
+
+def test_session_url_round_trip(tmp_path):
+    store = TaskStore(tmp_path / "t.db")
+    store.insert_task("a", make_task(session_url="https://app.devin.ai/sessions/abc"))
+    assert store.get_task("a")["session_url"] == "https://app.devin.ai/sessions/abc"
+    store.update_task("a", session_url="https://app.devin.ai/sessions/xyz")
+    assert store.get_task("a")["session_url"] == "https://app.devin.ai/sessions/xyz"
+
+
+def test_additive_migration_adds_session_url_to_legacy_db(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            issue_id TEXT,
+            title TEXT,
+            repository TEXT,
+            branch TEXT,
+            status TEXT,
+            session_id TEXT,
+            pr_url TEXT,
+            failure_category TEXT,
+            failure_reason TEXT,
+            created_at REAL,
+            updated_at REAL,
+            error TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, issue_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ("old_task", "99", "completed", 100.0, 200.0),
+    )
+    conn.commit()
+    conn.close()
+
+    store = TaskStore(db_path)
+
+    task = store.get_task("old_task")
+    assert task is not None
+    assert task["session_url"] is None
+    assert task["status"] == "completed"
+
+    store.update_task("old_task", session_url="https://app.devin.ai/sessions/migrated")
+    assert store.get_task("old_task")["session_url"] == "https://app.devin.ai/sessions/migrated"
